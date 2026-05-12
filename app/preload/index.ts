@@ -29,6 +29,7 @@ const api = {
     list: (workspaceId: string) => ipcRenderer.invoke("chat:list", workspaceId),
     create: (workspaceId: string) => ipcRenderer.invoke("chat:create", workspaceId),
     open: (chatId: string) => ipcRenderer.invoke("chat:open", chatId) as Promise<ChatSessionPayload | null>,
+    delete: (chatId: string) => ipcRenderer.invoke("chat:delete", chatId) as Promise<void>,
     update: (chatId: string, patch: Partial<ChatSession>) => ipcRenderer.invoke("chat:update", { chatId, patch }) as Promise<ChatSession>,
     send: (chatId: string, prompt: string, assumeAuthenticated?: boolean) =>
       ipcRenderer.invoke("chat:send", { chatId, prompt, assumeAuthenticated }) as Promise<{
@@ -49,7 +50,8 @@ const api = {
     }
   },
   environment: {
-    getStatus: () => ipcRenderer.invoke("environment:getStatus") as Promise<EnvironmentStatus>
+    getStatus: () => ipcRenderer.invoke("environment:getStatus") as Promise<EnvironmentStatus>,
+    setupSandbox: () => ipcRenderer.invoke("environment:setupSandbox") as Promise<void>
   },
   diagnostics: {
     getSnapshot: () => ipcRenderer.invoke("diagnostics:getSnapshot") as Promise<DiagnosticsSnapshot>,

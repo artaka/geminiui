@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ChatSession, CliActivity, Message } from "@shared/types";
 import { useAppStore } from "../store";
 import { CustomDropdown, DropdownOption } from "./CustomDropdown";
@@ -281,12 +281,6 @@ function UserBubble(props: { message: Message }) {
 
 type AccessPreset = "default-permissions" | "auto-review" | "full-access";
 
-const ACCESS_PRESETS: DropdownOption[] = [
-  { value: "default-permissions", label: "Разрешения по умолчанию" },
-  { value: "auto-review", label: "Автопроверка" },
-  { value: "full-access", label: "Полный доступ" }
-];
-
 function getAccessPreset(session: ChatSession): AccessPreset {
   if (!session.sandbox && session.approvalMode === "yolo") {
     return "full-access";
@@ -314,6 +308,12 @@ const ACCESS_PRESET_OPTIONS: DropdownOption[] = [
   { value: "full-access", label: "Полный доступ" }
 ];
 
+const ACCESS_PRESET_OPTIONS_RU: DropdownOption[] = [
+  { value: "default-permissions", label: "Разрешения по умолчанию" },
+  { value: "auto-review", label: "Автопроверка" },
+  { value: "full-access", label: "Полный доступ" }
+];
+
 export function ChatView() {
   const activeWorkspace = useAppStore((state) => state.activeWorkspace);
   const activeChat = useAppStore((state) => state.activeChat);
@@ -330,6 +330,7 @@ export function ChatView() {
   const [prompt, setPrompt] = useState("");
   const [tick, setTick] = useState(Date.now());
   const [workExpanded, setWorkExpanded] = useState(false);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
 
   const isBusy = cliStatus === "starting" || cliStatus === "streaming" || cliStatus === "busy";
 
@@ -348,46 +349,6 @@ export function ChatView() {
     }
   }, [isBusy]);
 
-  const lastUserPrompt = activeChat ? [...activeChat.messages].reverse().find((message) => message.role === "user")?.content : undefined;
-  const latestUserIndex = activeChat
-    ? [...activeChat.messages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "user")?.index ?? -1
-    : -1;
-  const latestUserMessage = activeChat && latestUserIndex >= 0 ? activeChat.messages[latestUserIndex] : null;
-  const latestAssistantIndex = activeChat
-    ? [...activeChat.messages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "assistant")?.index ?? -1
-    : -1;
-  const latestAssistant = activeChat && latestAssistantIndex >= 0 ? activeChat.messages[latestAssistantIndex] : null;
-  const historicalMessages = activeChat && latestAssistantIndex >= 0 ? activeChat.messages.filter((_, index) => index !== latestAssistantIndex) : activeChat?.messages ?? [];
-
-  const latestRunActivities = useMemo(() => {
-    if (!activeChat) {
-      return [];
-    }
-
-    if (!latestAssistant) {
-      return activeChat.activities;
-    }
-
-    const startedAt = new Date((latestUserMessage ?? latestAssistant).createdAt).getTime();
-    return activeChat.activities.filter((activity) => new Date(activity.createdAt).getTime() >= startedAt);
-  }, [activeChat, latestAssistant, latestUserMessage]);
-
-  const visibleActivities = latestRunActivities.filter((activity) => !(activity.kind === "status" && activity.title === "Structured response"));
-  const runStartedAt = visibleActivities[0]?.createdAt ?? latestUserMessage?.createdAt ?? latestAssistant?.createdAt;
-  const runCompleted = latestAssistant?.status === "done" || latestAssistant?.status === "error";
-  const runEndedAt = runCompleted
-    ? visibleActivities[visibleActivities.length - 1]?.createdAt ?? latestAssistant?.createdAt ?? runStartedAt
-    : undefined;
-  const showRunPanel = visibleActivities.length > 0 || latestAssistant?.status === "streaming";
-  const totalChars = activeChat?.messages.reduce((sum, message) => sum + message.content.length, 0) ?? 0;
-  const estimatedTokens = Math.max(1, Math.round(totalChars / 4));
-  const contextLimit = 128000;
-  const contextRatio = Math.min(1, estimatedTokens / contextLimit);
-  const requestCount = activeChat?.session.usage.requestCount ?? 0;
-  const totalUsedTokens = activeChat?.session.usage.totalTokens ?? 0;
-  const currentModel = activeChat?.session.model ?? settings?.preferredModel ?? "auto";
-  const currentAccessPreset = activeChat ? getAccessPreset(activeChat.session) : "default-permissions";
-
   const handleSend = () => {
     const value = prompt.trim();
     if (!value || isBusy) {
@@ -396,6 +357,55 @@ export function ChatView() {
     void sendPrompt(value);
     setPrompt("");
   };
+
+  const chatMessages = activeChat?.messages ?? [];
+  const chatActivities = activeChat?.activities ?? [];
+  const lastUserPrompt = [...chatMessages].reverse().find((message) => message.role === "user")?.content;
+  const latestUserIndex = [...chatMessages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "user")?.index ?? -1;
+  const latestUserMessage = latestUserIndex >= 0 ? chatMessages[latestUserIndex] : null;
+  const latestAssistantIndex = [...chatMessages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "assistant")?.index ?? -1;
+  const latestAssistant = latestAssistantIndex >= 0 ? chatMessages[latestAssistantIndex] : null;
+  const historicalMessages = latestAssistantIndex >= 0 ? chatMessages.filter((_, index) => index !== latestAssistantIndex) : chatMessages;
+
+  const latestRunActivities = useMemo(() => {
+    if (!latestAssistant) {
+      return chatActivities;
+    }
+
+    const startedAt = new Date((latestUserMessage ?? latestAssistant).createdAt).getTime();
+    return chatActivities.filter((activity) => new Date(activity.createdAt).getTime() >= startedAt);
+  }, [chatActivities, latestAssistant, latestUserMessage]);
+
+  const visibleActivities = latestRunActivities.filter((activity) => !(activity.kind === "status" && activity.title === "Structured response"));
+  const runStartedAt = visibleActivities[0]?.createdAt ?? latestUserMessage?.createdAt ?? latestAssistant?.createdAt;
+  const runCompleted = latestAssistant?.status === "done" || latestAssistant?.status === "error";
+  const runEndedAt = runCompleted
+    ? visibleActivities[visibleActivities.length - 1]?.createdAt ?? latestAssistant?.createdAt ?? runStartedAt
+    : undefined;
+  const showRunPanel = visibleActivities.length > 0 || latestAssistant?.status === "streaming";
+  const isEmptyChat = chatMessages.length === 0;
+  const totalChars = chatMessages.reduce((sum, message) => sum + message.content.length, 0);
+  const estimatedTokens = Math.max(1, Math.round(totalChars / 4));
+  const contextLimit = 128000;
+  const contextRatio = Math.min(1, estimatedTokens / contextLimit);
+  const requestCount = activeChat?.session.usage.requestCount ?? 0;
+  const totalUsedTokens = activeChat?.session.usage.totalTokens ?? 0;
+  const currentModel = activeChat?.session.model ?? settings?.preferredModel ?? "auto";
+  const currentAccessPreset = activeChat ? getAccessPreset(activeChat.session) : "default-permissions";
+
+  useEffect(() => {
+    if (!isBusy && showRunPanel) {
+      setWorkExpanded(false);
+    }
+  }, [isBusy, showRunPanel, latestAssistant?.id, latestAssistant?.status]);
+
+  useEffect(() => {
+    const container = messageListRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [activeChat?.session.id, chatMessages.length, chatActivities.length, latestAssistant?.content, workExpanded]);
 
   if (!activeWorkspace) {
     return (
@@ -429,7 +439,7 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
-      <div className="message-list">
+      <div ref={messageListRef} className={`message-list ${isEmptyChat ? "message-list-empty" : ""}`.trim()}>
         {environment?.dependencies.some((dependency) => dependency.id === "ripgrep" && !dependency.installed) ? (
           <div className="warning-banner">Ripgrep is missing. Gemini CLI still works, but workspace search falls back to a slower tool.</div>
         ) : null}
@@ -553,7 +563,7 @@ export function ChatView() {
               </button>
               <CustomDropdown
                 className="composer-mode-dropdown"
-                options={ACCESS_PRESET_OPTIONS}
+                options={ACCESS_PRESET_OPTIONS_RU}
                 value={currentAccessPreset}
                 onChange={(value) => void updateChat(activeChat.session.id, getAccessConfig(value as AccessPreset))}
                 ariaLabel="Agent mode"

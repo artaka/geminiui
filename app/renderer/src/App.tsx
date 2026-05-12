@@ -14,9 +14,20 @@ class RendererErrorBoundary extends Component<{ children: ReactNode }, { hasErro
     };
   }
 
+  override componentDidCatch(error: Error, errorInfo: { componentStack: string }) {
+    console.error("[renderer] error-boundary", error, errorInfo.componentStack);
+  }
+
   override render() {
     if (this.state.hasError) {
-      return <AuthScreen mode="login" error={this.state.message ?? "Renderer crashed while drawing the current screen."} />;
+      return (
+        <div className="centered-screen">
+          <div className="auth-card">
+            <h1>Renderer Error</h1>
+            <p className="auth-copy">{this.state.message ?? "Renderer crashed while drawing the current screen."}</p>
+          </div>
+        </div>
+      );
     }
 
     return this.props.children;
@@ -41,14 +52,14 @@ export function App() {
   }, [bootstrap, applyCliEvent]);
 
   if (loading && !bootstrapped) {
-    return <LoadingScreen label="Booting GeminiApp..." />;
+    return <LoadingScreen label="Booting GeminiApp and checking Gemini CLI..." />;
   }
 
-  if (!cliHealth?.installed) {
+  if (cliHealth && !cliHealth.installed) {
     return <AuthScreen mode="install" error={error} />;
   }
 
-  if (!cliHealth.authenticated && !settings?.manualAuthConfirmed) {
+  if (cliHealth && !cliHealth.authenticated && !settings?.manualAuthConfirmed) {
     return <AuthScreen mode="login" error={error} />;
   }
 

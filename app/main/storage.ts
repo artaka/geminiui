@@ -40,7 +40,8 @@ function createDefaultSettings(): AppSettings {
     cliPath: runtimeConfig.cli.defaultExecutable,
     preferredModel: runtimeConfig.models[0]?.id ?? "auto",
     preferredApprovalMode: "default",
-    preferredSandbox: true
+    preferredSandbox: true,
+    preferredSandboxMode: "auto"
   };
 }
 
@@ -154,6 +155,18 @@ export class JsonStore {
       messages: this.data.messages.filter((item) => item.chatId === chatId).map((item) => ({ ...item })),
       activities: this.data.activities.filter((item) => item.chatId === chatId).map((item) => ({ ...item }))
     };
+  }
+
+  deleteChat(chatId: string): void {
+    this.data.chats = this.data.chats.filter((item) => item.id !== chatId);
+    this.data.messages = this.data.messages.filter((item) => item.chatId !== chatId);
+    this.data.activities = this.data.activities.filter((item) => item.chatId !== chatId);
+
+    if (this.data.settings.activeChatId === chatId) {
+      this.data.settings.activeChatId = undefined;
+    }
+
+    this.persist(this.data);
   }
 
   saveMessage(message: Message): Message {

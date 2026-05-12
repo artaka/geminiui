@@ -2,6 +2,12 @@ import { useEffect } from "react";
 import { useAppStore } from "../store";
 import { CustomDropdown } from "./CustomDropdown";
 
+const SANDBOX_MODE_OPTIONS = [
+  { value: "auto", label: "Auto (enabled, fallback allowed)" },
+  { value: "force", label: "Force (sandbox required)" },
+  { value: "off", label: "Off" }
+];
+
 export function SettingsView() {
   const settings = useAppStore((state) => state.settings);
   const diagnostics = useAppStore((state) => state.diagnostics);
@@ -14,6 +20,7 @@ export function SettingsView() {
   const recheckCli = useAppStore((state) => state.recheckCli);
   const openCliLogin = useAppStore((state) => state.openCliLogin);
   const installCli = useAppStore((state) => state.installCli);
+  const setupSandbox = useAppStore((state) => state.setupSandbox);
   const addWorkspace = useAppStore((state) => state.addWorkspace);
   const setScreen = useAppStore((state) => state.setScreen);
 
@@ -87,6 +94,21 @@ export function SettingsView() {
                 ariaLabel="Preferred model"
               />
             </label>
+            <label className="field">
+              <span>Sandbox mode</span>
+              <CustomDropdown
+                className="settings-model-dropdown"
+                options={SANDBOX_MODE_OPTIONS}
+                value={settings?.preferredSandboxMode ?? "auto"}
+                onChange={(value) => void updateSettings({ preferredSandboxMode: value as "off" | "auto" | "force" })}
+                ariaLabel="Sandbox mode"
+              />
+            </label>
+            <div className="settings-actions">
+              <button className="nav-button" onClick={() => void setupSandbox()}>
+                Setup sandbox
+              </button>
+            </div>
           </section>
         </div>
 

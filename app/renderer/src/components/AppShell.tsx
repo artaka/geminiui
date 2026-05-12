@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
+import { ChatSession } from "@shared/types";
 import { useAppStore } from "../store";
 import { ChatView } from "./ChatView";
 import { SettingsView } from "./SettingsView";
@@ -145,12 +146,14 @@ export function AppShell() {
   const addWorkspace = useAppStore((state) => state.addWorkspace);
   const selectWorkspace = useAppStore((state) => state.selectWorkspace);
   const openChat = useAppStore((state) => state.openChat);
+  const deleteChat = useAppStore((state) => state.deleteChat);
   const createChat = useAppStore((state) => state.createChat);
   const activeScreen = useAppStore((state) => state.activeScreen);
   const setScreen = useAppStore((state) => state.setScreen);
   const [isMaximized, setIsMaximized] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [deleteCandidate, setDeleteCandidate] = useState<ChatSession | null>(null);
 
   const headerPath = activeWorkspace?.path ?? "No workspace selected";
   const handleOpenChat = (chatId: string) => {
@@ -270,15 +273,21 @@ export function AppShell() {
                         {isActiveWorkspace ? (
                           <div className="chat-tree">
                             {chats.map((chat) => (
-                              <button
-                                key={chat.id}
-                                className={`chat-list-item chat-tree-item ${activeChat?.session.id === chat.id ? "active" : ""}`}
-                                onClick={() => handleOpenChat(chat.id)}
-                                title={chat.title}
-                              >
-                                <span className="chat-list-title">{chat.title}</span>
-                                <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>
-                              </button>
+                              <div key={chat.id} className={`chat-row ${activeChat?.session.id === chat.id ? "active" : ""}`}>
+                                <button className={`chat-list-item chat-tree-item ${activeChat?.session.id === chat.id ? "active" : ""}`} onClick={() => handleOpenChat(chat.id)} title={chat.title}>
+                                  <span className="chat-list-title">{chat.title}</span>
+                                  <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>
+                                </button>
+                                <button
+                                  className="chat-delete-button"
+                                  type="button"
+                                  title="Delete chat"
+                                  aria-label={`Delete chat ${chat.title}`}
+                                  onClick={() => setDeleteCandidate(chat)}
+                                >
+                                  <SidebarIcon name="close" />
+                                </button>
+                              </div>
                             ))}
                             {chats.length === 0 ? <div className="empty-sidebar-text">No chats yet in this workspace.</div> : null}
                           </div>
@@ -301,6 +310,32 @@ export function AppShell() {
           {activeScreen === "settings" ? <SettingsView /> : <ChatView />}
         </main>
       </div>
+
+      {deleteCandidate ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setDeleteCandidate(null)}>
+          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-chat-title" onClick={(event) => event.stopPropagation()}>
+            <h3 id="delete-chat-title">Delete chat?</h3>
+            <p className="muted-text">
+              This will remove <strong>{deleteCandidate.title}</strong> with all its messages and activity logs.
+            </p>
+            <div className="confirm-modal-actions">
+              <button className="ghost-button" onClick={() => setDeleteCandidate(null)}>
+                Cancel
+              </button>
+              <button
+                className="nav-button danger-button"
+                onClick={() => {
+                  const chatId = deleteCandidate.id;
+                  setDeleteCandidate(null);
+                  void deleteChat(chatId);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

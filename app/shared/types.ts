@@ -25,6 +25,7 @@ export interface Workspace {
 }
 
 export type ApprovalMode = "default" | "auto_edit" | "yolo" | "plan";
+export type SandboxMode = "off" | "auto" | "force";
 
 export interface ChatUsageSnapshot {
   requestCount: number;
@@ -100,7 +101,9 @@ export interface AppSettings {
   preferredModel: string;
   preferredApprovalMode: ApprovalMode;
   preferredSandbox: boolean;
+  preferredSandboxMode: SandboxMode;
   manualAuthConfirmed?: boolean;
+  missingCliOnboardingShown?: boolean;
   activeWorkspaceId?: string;
   activeChatId?: string;
 }

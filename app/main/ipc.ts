@@ -21,6 +21,45 @@ export function registerIpcHandlers(deps: {
 }) {
   const { store, cli, diagnostics, environment, runtimeConfig } = deps;
 
+  const showMessageBox = async (parentWindow: BrowserWindow | null | undefined, options: Electron.MessageBoxOptions) => {
+    if (parentWindow) {
+      return await dialog.showMessageBox(parentWindow, options);
+    }
+    return await dialog.showMessageBox(options);
+  };
+
+  const showMissingCliOnboarding = async (parentWindow?: BrowserWindow | null) => {
+    const warningResult = await showMessageBox(parentWindow, {
+      type: "warning",
+      title: "Gemini CLI not found",
+      message: "GeminiApp could not find Gemini CLI on this computer.",
+      detail: "The app depends on the local Gemini CLI. Install it first, then return to GeminiApp and run the check again.",
+      buttons: ["Show instructions", "Close"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+
+    if (warningResult.response !== 0) {
+      return;
+    }
+
+    const installResult = await showMessageBox(parentWindow, {
+      type: "info",
+      title: "How to install Gemini CLI",
+      message: "1. Install Node.js if it is missing.\n2. Run: npm install -g @google/gemini-cli\n3. Restart GeminiApp or press Recheck Gemini CLI.\n4. Then sign in through Gemini CLI.",
+      detail: "You can open an installer terminal from the next step. It will run the dependency setup commands for GeminiApp.",
+      buttons: ["Open installer terminal", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+
+    if (installResult.response === 0) {
+      environment.openInstallTerminal();
+    }
+  };
+
   const deriveAuthState = (cliHealth: CliHealth, manualAuthConfirmed?: boolean): AuthState => {
     if (!cliHealth.installed) {
       return "signed_out";
@@ -205,6 +244,23 @@ export function registerIpcHandlers(deps: {
     return store.getChatPayload(chatId);
   });
 
+  ipcMain.handle("chat:delete", (_event, chatId: string) => {
+    const chatPayload = store.getChatPayload(chatId);
+    if (!chatPayload) {
+      return;
+    }
+
+    const nextWorkspaceId = chatPayload.session.workspaceId;
+    store.deleteChat(chatId);
+
+    const nextChats = store.listChats(nextWorkspaceId);
+    const nextActiveChatId = nextChats[0]?.id;
+    store.updateSettings({
+      activeWorkspaceId: nextWorkspaceId,
+      activeChatId: nextActiveChatId
+    });
+  });
+
   ipcMain.handle("chat:update", (_event, payload: { chatId: string; patch: Partial<ChatSession> }) => {
     const chatPayload = store.getChatPayload(payload.chatId);
     if (!chatPayload) {
@@ -224,6 +280,7 @@ export function registerIpcHandlers(deps: {
     if (!chatPayload) {
       throw new Error("Chat not found.");
     }
+    const settings = store.getSettings();
 
     const workspace = store.listWorkspaces().find((item) => item.id === chatPayload.session.workspaceId);
     if (!workspace) {
@@ -262,7 +319,8 @@ export function registerIpcHandlers(deps: {
       sessionId: chatPayload.session.cliSessionId,
       model: chatPayload.session.model,
       approvalMode: chatPayload.session.approvalMode,
-      sandbox: chatPayload.session.sandbox,
+      sandbox: chatPayload.session.sandbox && settings.preferredSandboxMode !== "off",
+      allowSandboxFallback: settings.preferredSandboxMode !== "force",
       assumeAuthenticated: payload.assumeAuthenticated
     });
 
@@ -282,6 +340,9 @@ export function registerIpcHandlers(deps: {
     environment.openInstallTerminal();
   });
   ipcMain.handle("environment:getStatus", () => environment.getStatus());
+  ipcMain.handle("environment:setupSandbox", () => {
+    environment.openSandboxSetupTerminal(cli.getCliPath());
+  });
 
   ipcMain.handle("diagnostics:getSnapshot", async () => {
     const settings = store.getSettings();
@@ -303,7 +364,7 @@ export function registerIpcHandlers(deps: {
     return diagnostics.exportLogs(snapshot);
   });
 
-  ipcMain.handle("bootstrap:load", async () => {
+  ipcMain.handle("bootstrap:load", async (event) => {
     const settings = store.getSettings();
     const workspaces = store.listWorkspaces().map((workspace) => ({
       ...workspace,
@@ -311,19 +372,14 @@ export function registerIpcHandlers(deps: {
     }));
     const activeWorkspace = workspaces.find((item) => item.id === settings.activeWorkspaceId) ?? null;
     const chats = activeWorkspace ? store.listChats(activeWorkspace.id) : [];
-    const activeChatCandidate = settings.activeChatId ? store.getChatPayload(settings.activeChatId) : null;
-    const activeChat =
-      activeWorkspace && activeChatCandidate?.session.workspaceId === activeWorkspace.id
-        ? activeChatCandidate
-        : null;
-    let cliHealth = await cli.checkHealth();
-    if (settings.manualAuthConfirmed && cliHealth.installed) {
-      cliHealth = {
-        ...cliHealth,
-        authenticated: true,
-        status: "connected",
-        message: "Gemini CLI was manually confirmed as signed in."
-      };
+    const cliHealth = await cli.checkHealth();
+    const environmentStatus = await environment.getStatus();
+
+    if (!cliHealth.installed && !settings.missingCliOnboardingShown) {
+      const parentWindow = BrowserWindow.fromWebContents(event.sender);
+      await showMissingCliOnboarding(parentWindow);
+      settings.missingCliOnboardingShown = true;
+      store.updateSettings({ missingCliOnboardingShown: true });
     }
 
     return {
@@ -332,10 +388,10 @@ export function registerIpcHandlers(deps: {
       workspaces,
       activeWorkspace,
       chats,
-      activeChat,
+      activeChat: null,
       cliStatus: cliHealth.status,
       cliHealth,
-      environment: await environment.getStatus(),
+      environment: environmentStatus,
       models: runtimeConfig.models
     };
   });

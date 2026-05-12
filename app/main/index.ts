@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BrowserWindow, Menu, MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, Menu } from "electron";
 import { GeminiCliManager } from "./cli";
 import { DiagnosticsManager } from "./diagnostics";
 import { EnvironmentManager } from "./environment";
@@ -10,29 +10,7 @@ import { JsonStore } from "./storage";
 let mainWindow: BrowserWindow | null = null;
 
 function createMenu() {
-  const template: MenuItemConstructorOptions[] = [
-    {
-      label: "File",
-      submenu: [{ role: "quit" }]
-    },
-    {
-      label: "Edit",
-      submenu: [{ role: "copy" }, { role: "paste" }, { role: "selectAll" }]
-    },
-    {
-      label: "View",
-      submenu: [{ role: "reload" }, { role: "toggleDevTools" }]
-    },
-    {
-      label: "Window",
-      submenu: [{ role: "minimize" }]
-    },
-    {
-      label: "Help",
-      submenu: []
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(null);
 }
 
 async function createWindow() {
@@ -46,7 +24,8 @@ async function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false
     }
   });
 
@@ -55,6 +34,9 @@ async function createWindow() {
   };
   mainWindow.on("maximize", emitMaximizedChanged);
   mainWindow.on("unmaximize", emitMaximizedChanged);
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
   const rendererUrl = process.env.VITE_DEV_SERVER_URL ?? (!app.isPackaged ? "http://localhost:5173" : undefined);
   if (rendererUrl) {

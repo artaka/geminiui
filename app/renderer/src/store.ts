@@ -23,7 +23,7 @@ interface BootstrapPayload {
   chats: ChatSession[];
   activeChat: ChatSessionPayload | null;
   cliStatus: CliStatus;
-  cliHealth: CliHealth;
+  cliHealth: CliHealth | null;
   environment: EnvironmentStatus;
   models: RuntimeModelOption[];
 }
@@ -50,6 +50,7 @@ interface AppState {
   selectWorkspace(workspaceId: string): Promise<void>;
   createChat(): Promise<void>;
   openChat(chatId: string): Promise<void>;
+  deleteChat(chatId: string): Promise<void>;
   updateChat(chatId: string, patch: Partial<ChatSession>): Promise<void>;
   sendPrompt(prompt: string): Promise<void>;
   stopPrompt(): Promise<void>;
@@ -60,8 +61,64 @@ interface AppState {
   confirmCliAuth(): Promise<void>;
   openCliLogin(): Promise<void>;
   installCli(): Promise<void>;
+  setupSandbox(): Promise<void>;
   setScreen(screen: "chat" | "settings"): void;
   applyCliEvent(event: CliEvent): void;
+}
+
+let bootstrapPromise: Promise<void> | null = null;
+
+function mergeUsageSnapshot(current: ChatSession["usage"], nextStats: unknown, updatedAt: string): ChatSession["usage"] {
+  const next = {
+    requestCount: current.requestCount + 1,
+    inputTokens: current.inputTokens,
+    outputTokens: current.outputTokens,
+    cachedTokens: current.cachedTokens,
+    totalTokens: current.totalTokens,
+    lastUpdatedAt: updatedAt
+  };
+
+  const visitTokenContainer = (value: unknown) => {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    const readNumber = (...keys: string[]) => {
+      for (const key of keys) {
+        const candidate = record[key];
+        if (typeof candidate === "number" && Number.isFinite(candidate)) {
+          return candidate;
+        }
+      }
+      return 0;
+    };
+
+    next.inputTokens += readNumber("inputTokens", "input_tokens", "promptTokens", "prompt_tokens");
+    next.outputTokens += readNumber("outputTokens", "output_tokens", "responseTokens", "response_tokens", "candidateTokens", "candidatesTokens");
+    next.cachedTokens += readNumber("cachedTokens", "cached_tokens", "cacheReadTokens", "cache_read_tokens");
+    next.totalTokens += readNumber("totalTokens", "total_tokens");
+  };
+
+  if (nextStats && typeof nextStats === "object") {
+    const statsRecord = nextStats as Record<string, unknown>;
+    if (statsRecord.models && typeof statsRecord.models === "object") {
+      for (const modelStat of Object.values(statsRecord.models as Record<string, unknown>)) {
+        if (modelStat && typeof modelStat === "object") {
+          visitTokenContainer((modelStat as Record<string, unknown>).tokens);
+        }
+      }
+    } else {
+      visitTokenContainer(statsRecord.tokens);
+      visitTokenContainer(statsRecord);
+    }
+  }
+
+  if (next.totalTokens === current.totalTokens) {
+    next.totalTokens = next.inputTokens + next.outputTokens + next.cachedTokens;
+  }
+
+  return next;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -82,26 +139,44 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "chat",
 
   async bootstrap() {
-    set({ loading: true, error: undefined });
-    try {
-      const payload = (await window.gemini.bootstrap.load()) as BootstrapPayload;
-      set({
-        bootstrapped: true,
-        loading: false,
-        session: payload.session,
-        settings: payload.settings,
-        workspaces: payload.workspaces,
-        activeWorkspace: payload.activeWorkspace,
-        chats: payload.chats,
-        activeChat: payload.activeChat,
-        cliStatus: payload.cliStatus,
-        cliHealth: payload.cliHealth,
-        environment: payload.environment,
-        models: payload.models
-      });
-    } catch (error) {
-      set({ loading: false, error: error instanceof Error ? error.message : String(error) });
+    if (get().bootstrapped) {
+      return;
     }
+
+    if (bootstrapPromise) {
+      return bootstrapPromise;
+    }
+
+    bootstrapPromise = (async () => {
+      set({ loading: true, error: undefined });
+      try {
+        const payload = (await window.gemini.bootstrap.load()) as BootstrapPayload;
+        set({
+          bootstrapped: true,
+          loading: false,
+          session: payload.session,
+          settings: payload.settings,
+          workspaces: payload.workspaces,
+          activeWorkspace: payload.activeWorkspace,
+          chats: payload.chats,
+          activeChat: payload.activeChat,
+          cliStatus: payload.cliStatus,
+          cliHealth: payload.cliHealth,
+          environment: payload.environment,
+          models: payload.models
+        });
+
+        if (payload.settings.activeChatId) {
+          void get().openChat(payload.settings.activeChatId);
+        }
+      } catch (error) {
+        set({ loading: false, error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        bootstrapPromise = null;
+      }
+    })();
+
+    return bootstrapPromise;
   },
 
   async addWorkspace() {
@@ -147,10 +222,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async openChat(chatId: string) {
-    const activeChat = await window.gemini.chat.open(chatId);
-    if (activeChat) {
-      set({ activeChat });
+    try {
+      const activeChat = await window.gemini.chat.open(chatId);
+      if (activeChat) {
+        set({ activeChat, error: undefined });
+      }
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
+  },
+
+  async deleteChat(chatId: string) {
+    const activeWorkspace = get().activeWorkspace;
+    if (!activeWorkspace) {
+      return;
+    }
+
+    await window.gemini.chat.delete(chatId);
+    const chats = await window.gemini.chat.list(activeWorkspace.id);
+    const nextActiveChat = chats[0] ? await window.gemini.chat.open(chats[0].id) : null;
+    set({
+      chats,
+      activeChat: nextActiveChat
+    });
   },
 
   async updateChat(chatId, patch) {
@@ -192,35 +288,63 @@ export const useAppStore = create<AppState>((set, get) => ({
       cliStatus: "starting"
     });
 
-    const result = (await window.gemini.chat.send(
-      activeChat.session.id,
-      prompt,
-      get().settings?.manualAuthConfirmed
-    )) as {
-      userMessage: Message;
-      assistantMessage: Message;
-    };
-
-    set((state) => {
-      if (!state.activeChat || state.activeChat.session.id !== activeChat.session.id) {
-        return state;
-      }
-      const messages = [...state.activeChat.messages];
-      messages[messages.length - 2] = result.userMessage;
-      messages[messages.length - 1] = result.assistantMessage;
-      return {
-        activeChat: {
-          ...state.activeChat,
-          messages
-        }
+    try {
+      const result = (await window.gemini.chat.send(
+        activeChat.session.id,
+        prompt,
+        get().settings?.manualAuthConfirmed
+      )) as {
+        userMessage: Message;
+        assistantMessage: Message;
       };
-    });
 
-    const workspace = get().activeWorkspace;
-    if (workspace) {
-      const chats = await window.gemini.chat.list(workspace.id);
-      const refreshedActiveChat = await window.gemini.chat.open(activeChat.session.id);
-      set({ chats, activeChat: refreshedActiveChat ?? get().activeChat });
+      set((state) => {
+        if (!state.activeChat || state.activeChat.session.id !== activeChat.session.id) {
+          return state;
+        }
+        const messages = [...state.activeChat.messages];
+        messages[messages.length - 2] = result.userMessage;
+        messages[messages.length - 1] = result.assistantMessage;
+        return {
+          activeChat: {
+            ...state.activeChat,
+            messages
+          }
+        };
+      });
+
+      const workspace = get().activeWorkspace;
+      if (workspace) {
+        const chats = await window.gemini.chat.list(workspace.id);
+        const refreshedActiveChat = await window.gemini.chat.open(activeChat.session.id);
+        set({ chats, activeChat: refreshedActiveChat ?? get().activeChat });
+      }
+    } catch (error) {
+      set((state) => {
+        if (!state.activeChat || state.activeChat.session.id !== activeChat.session.id) {
+          return {
+            cliStatus: "error" as const,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+
+        const messages = state.activeChat.messages.map((message, index, all) => {
+          if (index === all.length - 1 && message.role === "assistant" && message.status === "streaming") {
+            return {
+              ...message,
+              status: "error" as const,
+              content: message.content || (error instanceof Error ? error.message : String(error))
+            };
+          }
+          return message;
+        });
+
+        return {
+          activeChat: { ...state.activeChat, messages },
+          cliStatus: "error" as const,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      });
     }
   },
 
@@ -248,6 +372,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async recheckCli() {
+    if (get().checkingCli) {
+      return;
+    }
+
     set({ checkingCli: true, error: undefined });
     try {
       const cliHealth = await window.gemini.cli.recheck();
@@ -298,12 +426,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  async setupSandbox() {
+    try {
+      await window.gemini.environment.setupSandbox();
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  },
+
   setScreen(screen) {
     set({ activeScreen: screen });
   },
 
   applyCliEvent(event) {
-    set((state) => {
+    try {
+      set((state) => {
       const activeChat = state.activeChat;
       if (!activeChat || activeChat.session.id !== event.chatId) {
         return {
@@ -354,11 +493,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...activeChat.session,
           cliSessionId: event.sessionId ?? activeChat.session.cliSessionId,
           model: event.model ?? activeChat.session.model,
-          usage: {
-            ...activeChat.session.usage,
-            requestCount: activeChat.session.usage.requestCount + 1,
-            lastUpdatedAt: event.createdAt
-          }
+          usage: mergeUsageSnapshot(activeChat.session.usage, event.stats, event.createdAt)
         };
         return {
           activeChat: { ...activeChat, session: nextSession },
@@ -420,6 +555,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       return state;
-    });
+      });
+    } catch (error) {
+      set({
+        cliStatus: "error",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }));

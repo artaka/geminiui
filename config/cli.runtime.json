@@ -15,7 +15,7 @@
         "--approval-mode",
         "yolo"
       ],
-      "timeoutMs": 12000
+      "timeoutMs": 30000
     },
     "chat": {
       "outputFormat": "stream-json"
@@ -37,6 +37,14 @@
       "checkCommand": "rg",
       "installHint": "winget install --id BurntSushi.ripgrep -e",
       "installScript": "where winget >nul 2>nul && winget install --id BurntSushi.ripgrep -e --accept-source-agreements --accept-package-agreements || echo winget is not available; install ripgrep manually."
+    },
+    {
+      "id": "docker",
+      "name": "Docker Desktop",
+      "required": false,
+      "checkCommand": "docker",
+      "installHint": "winget install -e --id Docker.DockerDesktop",
+      "installScript": "where winget >nul 2>nul && winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements || echo winget is not available; install Docker Desktop manually."
     }
   ],
   "models": [
