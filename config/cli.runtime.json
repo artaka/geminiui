@@ -1,0 +1,80 @@
+{
+  "cli": {
+    "npmPackage": "@google/gemini-cli",
+    "defaultExecutable": "gemini",
+    "pathCandidates": [
+      "%APPDATA%\\npm\\gemini.cmd",
+      "gemini"
+    ],
+    "healthcheck": {
+      "prompt": "ping",
+      "args": [
+        "--output-format",
+        "json",
+        "--skip-trust",
+        "--approval-mode",
+        "yolo"
+      ],
+      "timeoutMs": 12000
+    },
+    "chat": {
+      "outputFormat": "stream-json"
+    }
+  },
+  "dependencies": [
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "required": true,
+      "checkCommand": "gemini",
+      "installHint": "npm install -g @google/gemini-cli",
+      "installScript": "npm install -g @google/gemini-cli"
+    },
+    {
+      "id": "ripgrep",
+      "name": "Ripgrep",
+      "required": false,
+      "checkCommand": "rg",
+      "installHint": "winget install --id BurntSushi.ripgrep -e",
+      "installScript": "where winget >nul 2>nul && winget install --id BurntSushi.ripgrep -e --accept-source-agreements --accept-package-agreements || echo winget is not available; install ripgrep manually."
+    }
+  ],
+  "models": [
+    {
+      "id": "auto",
+      "label": "Auto"
+    },
+    {
+      "id": "pro",
+      "label": "Pro"
+    },
+    {
+      "id": "flash",
+      "label": "Flash"
+    },
+    {
+      "id": "flash-lite",
+      "label": "Flash Lite"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "label": "Gemini 2.5 Pro"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "label": "Gemini 2.5 Flash"
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "label": "Gemini 2.0 Flash"
+    },
+    {
+      "id": "gemini-1.5-pro",
+      "label": "Gemini 1.5 Pro"
+    },
+    {
+      "id": "gemini-1.5-flash",
+      "label": "Gemini 1.5 Flash"
+    }
+  ]
+}
