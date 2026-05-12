@@ -1,6 +1,6 @@
 {
   "name": "geminiapp",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Electron desktop client for Gemini CLI with a Codex-like UX.",
   "main": "dist/main/index.js",
   "author": "OpenAI Codex",
@@ -17,6 +17,8 @@
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@fontsource/fira-mono": "^5.2.7",
+    "highlight.js": "^11.11.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.5"

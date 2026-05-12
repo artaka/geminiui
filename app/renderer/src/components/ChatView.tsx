@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import hljs from "highlight.js";
 import { ChatSession, CliActivity, Message } from "@shared/types";
 import { useAppStore } from "../store";
 import { CustomDropdown, DropdownOption } from "./CustomDropdown";
@@ -172,10 +173,16 @@ function RichTextMessage(props: { text: string }) {
       const [language, ...bodyLines] = segment.split("\n");
       const body = bodyLines.length > 0 ? bodyLines.join("\n") : language;
       const codeLanguage = bodyLines.length > 0 ? language.trim() : "";
+      const normalizedLanguage = codeLanguage.toLowerCase();
+      const highlightedCode = normalizedLanguage && hljs.getLanguage(normalizedLanguage)
+        ? hljs.highlight(body.trim(), { language: normalizedLanguage, ignoreIllegals: true }).value
+        : hljs.highlightAuto(body.trim()).value;
       blocks.push(
         <div key={`code-${segmentIndex}`} className="rich-code-block">
           {codeLanguage ? <div className="rich-code-label">{codeLanguage}</div> : null}
-          <pre>{body.trim()}</pre>
+          <pre>
+            <code className="hljs" dangerouslySetInnerHTML={{ __html: highlightedCode }} />
+          </pre>
         </div>
       );
     } else {

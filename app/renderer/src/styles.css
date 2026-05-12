@@ -1150,7 +1150,7 @@ select {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: "Fira Mono", monospace;
   font-size: 13px;
   line-height: 1.5;
   color: #f4f4f6;
@@ -1175,7 +1175,7 @@ select {
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.28);
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: "Fira Mono", monospace;
   font-size: 13px;
   line-height: 1.56;
   white-space: pre-wrap;
@@ -1271,6 +1271,7 @@ select {
 
 .rich-code-label {
   padding: 10px 14px;
+  font-family: "Fira Mono", monospace;
   font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1283,10 +1284,85 @@ select {
   margin: 0;
   padding: 16px;
   overflow: auto;
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: "Fira Mono", monospace;
   font-size: 13px;
   line-height: 1.65;
   color: #f4f4f6;
+}
+
+.rich-code-block pre code.hljs {
+  display: block;
+  background: transparent;
+  color: #f4f4f6;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: #7f848e;
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst {
+  color: #ff7b72;
+}
+
+.hljs-string,
+.hljs-doctag,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #79c0ff;
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta,
+.hljs-link {
+  color: #d2a8ff;
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #ffa657;
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-template-tag {
+  color: #c9d1d9;
+}
+
+.hljs-function .hljs-title,
+.hljs-title.function_ {
+  color: #d2a8ff;
+}
+
+.hljs-tag,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: #7ee787;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 700;
 }
 
 .inline-link {
