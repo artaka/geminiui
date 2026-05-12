@@ -43,6 +43,7 @@ export interface ChatSession {
   createdAt: string;
   updatedAt: string;
   cliSessionId?: string;
+  cliSessionTransport?: "acp";
   model: string;
   approvalMode: ApprovalMode;
   sandbox: boolean;
@@ -59,6 +60,7 @@ export interface Message {
   content: string;
   status: MessageStatus;
   createdAt: string;
+  durationMs?: number;
 }
 
 export type CliActivityKind = "status" | "command" | "stdout" | "stderr" | "error";
@@ -67,6 +69,7 @@ export type CliActivityStatus = "running" | "done" | "error";
 export interface CliActivity {
   id: string;
   chatId: string;
+  messageId?: string;
   kind: CliActivityKind;
   title: string;
   body: string;
@@ -87,12 +90,12 @@ export interface CliEventBase {
 
 export type CliEvent =
   | (CliEventBase & { type: "status"; status: CliStatus; detail?: string })
-  | (CliEventBase & { type: "assistant_token"; token: string })
-  | (CliEventBase & { type: "activity"; activity: CliActivity })
+  | (CliEventBase & { type: "assistant_token"; token: string; messageId?: string })
+  | (CliEventBase & { type: "activity"; activity: CliActivity; messageId?: string })
   | (CliEventBase & { type: "session_initialized"; sessionId: string; model?: string })
   | (CliEventBase & { type: "run_summary"; sessionId?: string; model?: string; response?: string; stats?: unknown })
-  | (CliEventBase & { type: "completed" })
-  | (CliEventBase & { type: "error"; message: string });
+  | (CliEventBase & { type: "completed"; messageId?: string; durationMs?: number })
+  | (CliEventBase & { type: "error"; message: string; messageId?: string });
 
 export interface AppSettings {
   theme: "dark-codex";

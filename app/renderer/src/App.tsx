@@ -48,8 +48,10 @@ export function App() {
     const unsubscribe = window.gemini.cli.onEvent((event) => {
       applyCliEvent(event);
     });
-    return unsubscribe;
-  }, [bootstrap, applyCliEvent]);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   if (loading && !bootstrapped) {
     return <LoadingScreen label="Booting GeminiApp and checking Gemini CLI..." />;

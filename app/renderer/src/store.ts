@@ -222,13 +222,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async openChat(chatId: string) {
+    if (get().activeChat?.session.id === chatId && !get().loading) {
+      return;
+    }
+
+    set({ loading: true, error: undefined });
     try {
       const activeChat = await window.gemini.chat.open(chatId);
       if (activeChat) {
-        set({ activeChat, error: undefined });
+        set({ activeChat, loading: false });
+      } else {
+        set({ loading: false });
       }
     } catch (error) {
       set({
+        loading: false,
         error: error instanceof Error ? error.message : String(error)
       });
     }
@@ -263,8 +271,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
+    const userMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const assistantMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const userMessage: Message = {
-      id: `pending_user_${Date.now()}`,
+      id: userMessageId,
       chatId: activeChat.session.id,
       role: "user",
       content: prompt,
@@ -272,7 +282,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       createdAt: new Date().toISOString()
     };
     const assistantMessage: Message = {
-      id: `pending_assistant_${Date.now()}`,
+      id: assistantMessageId,
       chatId: activeChat.session.id,
       role: "assistant",
       content: "",
@@ -289,29 +299,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     try {
-      const result = (await window.gemini.chat.send(
+      await window.gemini.chat.send(
         activeChat.session.id,
         prompt,
-        get().settings?.manualAuthConfirmed
-      )) as {
-        userMessage: Message;
-        assistantMessage: Message;
-      };
-
-      set((state) => {
-        if (!state.activeChat || state.activeChat.session.id !== activeChat.session.id) {
-          return state;
-        }
-        const messages = [...state.activeChat.messages];
-        messages[messages.length - 2] = result.userMessage;
-        messages[messages.length - 1] = result.assistantMessage;
-        return {
-          activeChat: {
-            ...state.activeChat,
-            messages
-          }
-        };
-      });
+        get().settings?.manualAuthConfirmed,
+        userMessageId,
+        assistantMessageId
+      );
 
       const workspace = get().activeWorkspace;
       if (workspace) {
@@ -452,15 +446,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (event.type === "assistant_token") {
-        const messages = [...activeChat.messages];
-        const assistantIndex = [...messages].reverse().findIndex((item) => item.role === "assistant" && item.status === "streaming");
-        if (assistantIndex >= 0) {
-          const index = messages.length - 1 - assistantIndex;
-          messages[index] = {
-            ...messages[index],
-            content: messages[index].content + event.token
-          };
+        let fallbackAssistantId = event.messageId;
+        if (!fallbackAssistantId) {
+          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
+            const m = activeChat.messages[i];
+            if (m.role === "assistant" && m.status === "streaming") {
+              fallbackAssistantId = m.id;
+              break;
+            }
+          }
         }
+
+        const messages = activeChat.messages.map((message) =>
+          message.role === "assistant" && message.id === fallbackAssistantId
+            ? {
+                ...message,
+                status: "streaming" as const,
+                content: message.content + event.token
+              }
+            : message
+        );
         return {
           activeChat: { ...activeChat, messages },
           cliStatus: "streaming"
@@ -468,10 +473,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (event.type === "activity") {
+        const existingActivityIndex = activeChat.activities.findIndex((activity) => activity.id === event.activity.id);
+        let nextActivities: CliActivity[];
+        if (existingActivityIndex >= 0) {
+          nextActivities = activeChat.activities.map((activity, index) =>
+            index === existingActivityIndex ? event.activity : activity
+          );
+        } else {
+          nextActivities = [...activeChat.activities, event.activity];
+        }
+
+        if (nextActivities.length > 200) {
+          nextActivities = nextActivities.slice(-200);
+        }
+
         return {
           activeChat: {
             ...activeChat,
-            activities: [...activeChat.activities, event.activity]
+            activities: nextActivities
           }
         };
       }
@@ -480,6 +499,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const nextSession = {
           ...activeChat.session,
           cliSessionId: event.sessionId,
+          cliSessionTransport: "acp" as const,
           model: event.model ?? activeChat.session.model
         };
         return {
@@ -492,6 +512,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const nextSession = {
           ...activeChat.session,
           cliSessionId: event.sessionId ?? activeChat.session.cliSessionId,
+          cliSessionTransport: event.sessionId ? ("acp" as const) : activeChat.session.cliSessionTransport,
           model: event.model ?? activeChat.session.model,
           usage: mergeUsageSnapshot(activeChat.session.usage, event.stats, event.createdAt)
         };
@@ -502,9 +523,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (event.type === "completed") {
-        const messages = activeChat.messages.map((message, index, all) => {
-          if (index === all.length - 1 && message.role === "assistant" && message.status === "streaming") {
-            return { ...message, status: "done" as const };
+        let fallbackAssistantId = event.messageId;
+        if (!fallbackAssistantId) {
+          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
+            const m = activeChat.messages[i];
+            if (m.role === "assistant" && m.status === "streaming") {
+              fallbackAssistantId = m.id;
+              break;
+            }
+          }
+        }
+
+        const messages = activeChat.messages.map((message) => {
+          if (message.role === "assistant" && message.id === fallbackAssistantId) {
+            return { ...message, status: "done" as const, durationMs: event.durationMs };
           }
           return message;
         });
@@ -517,8 +549,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (event.type === "error") {
         const authFailure = /sign in|login|authenticate|credential|oauth|unauthorized/i.test(event.message);
-        const messages = activeChat.messages.map((message, index, all) => {
-          if (index === all.length - 1 && message.role === "assistant" && message.status === "streaming") {
+        let fallbackAssistantId = event.messageId;
+        if (!fallbackAssistantId) {
+          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
+            const m = activeChat.messages[i];
+            if (m.role === "assistant" && m.status === "streaming") {
+              fallbackAssistantId = m.id;
+              break;
+            }
+          }
+        }
+
+        const messages = activeChat.messages.map((message) => {
+          if (message.role === "assistant" && message.id === fallbackAssistantId) {
             return { ...message, status: "error" as const, content: message.content || event.message };
           }
           return message;
@@ -532,8 +575,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           status: "error",
           createdAt: event.createdAt
         };
+        let nextActivities = [...activeChat.activities, activity];
+        if (nextActivities.length > 200) {
+          nextActivities = nextActivities.slice(-200);
+        }
+
         return {
-          activeChat: { ...activeChat, messages, activities: [...activeChat.activities, activity] },
+          activeChat: { ...activeChat, messages, activities: nextActivities },
           cliStatus: "error",
           cliHealth: state.cliHealth
             ? {

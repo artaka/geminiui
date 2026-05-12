@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { memo, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import { ChatSession, CliActivity, Message } from "@shared/types";
 import { useAppStore } from "../store";
@@ -8,13 +8,20 @@ function formatClock(value: string): string {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatElapsed(startAt?: string, endAt?: number): string {
-  if (!startAt) {
+function formatElapsed(durationMs?: number, startAt?: string, tick?: number): string {
+  if (durationMs !== undefined) {
+    const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds}s`;
+  }
+
+  if (!startAt || !tick) {
     return "0s";
   }
 
   const started = new Date(startAt).getTime();
-  const totalSeconds = Math.max(0, Math.floor(((endAt ?? Date.now()) - started) / 1000));
+  const totalSeconds = Math.max(0, Math.floor((tick - started) / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
 
@@ -67,7 +74,7 @@ function InlineRichText(props: { text: string }) {
   return <>{nodes}</>;
 }
 
-function RichTextMessage(props: { text: string }) {
+const RichTextMessage = memo(function RichTextMessage(props: { text: string }) {
   const normalized = props.text.replace(/\r\n/g, "\n");
   const segments = normalized.split(/```/g);
   const blocks: ReactNode[] = [];
@@ -79,15 +86,16 @@ function RichTextMessage(props: { text: string }) {
 
     while (index < lines.length) {
       const line = lines[index].trimEnd();
+      const trimmedLine = line.trim();
 
-      if (!line.trim()) {
+      if (!trimmedLine) {
         index += 1;
         continue;
       }
 
-      if (line.startsWith("#")) {
-        const level = Math.min(3, line.match(/^#+/)?.[0].length ?? 1);
-        const content = line.replace(/^#+\s*/, "");
+      if (trimmedLine.startsWith("#")) {
+        const level = Math.min(3, trimmedLine.match(/^#+/)?.[0].length ?? 1);
+        const content = trimmedLine.replace(/^#+\s*/, "");
         const Tag = `h${level}` as "h1" | "h2" | "h3";
         localBlocks.push(
           <Tag key={`${keyPrefix}-heading-${index}`} className="rich-heading">
@@ -98,7 +106,7 @@ function RichTextMessage(props: { text: string }) {
         continue;
       }
 
-      if (/^[-*]\s+/.test(line)) {
+      if (/^[-*]\s+/.test(trimmedLine)) {
         const items: string[] = [];
         while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
           items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
@@ -116,7 +124,7 @@ function RichTextMessage(props: { text: string }) {
         continue;
       }
 
-      if (/^\d+\.\s+/.test(line)) {
+      if (/^\d+\.\s+/.test(trimmedLine)) {
         const items: string[] = [];
         while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
           items.push(lines[index].trim().replace(/^\d+\.\s+/, ""));
@@ -134,7 +142,7 @@ function RichTextMessage(props: { text: string }) {
         continue;
       }
 
-      if (line.startsWith(">")) {
+      if (trimmedLine.startsWith(">")) {
         const quotes: string[] = [];
         while (index < lines.length && lines[index].trim().startsWith(">")) {
           quotes.push(lines[index].trim().replace(/^>\s?/, ""));
@@ -163,6 +171,7 @@ function RichTextMessage(props: { text: string }) {
           <InlineRichText text={paragraph.join(" ")} />
         </p>
       );
+
     }
 
     blocks.push(...localBlocks);
@@ -174,9 +183,23 @@ function RichTextMessage(props: { text: string }) {
       const body = bodyLines.length > 0 ? bodyLines.join("\n") : language;
       const codeLanguage = bodyLines.length > 0 ? language.trim() : "";
       const normalizedLanguage = codeLanguage.toLowerCase();
-      const highlightedCode = normalizedLanguage && hljs.getLanguage(normalizedLanguage)
-        ? hljs.highlight(body.trim(), { language: normalizedLanguage, ignoreIllegals: true }).value
-        : hljs.highlightAuto(body.trim()).value;
+
+      let highlightedCode = "";
+      try {
+        if (normalizedLanguage && hljs.getLanguage(normalizedLanguage)) {
+          highlightedCode = hljs.highlight(body.trim(), { language: normalizedLanguage, ignoreIllegals: true }).value;
+        } else {
+          highlightedCode = body.trim()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+        }
+      } catch (e) {
+        highlightedCode = body.trim();
+      }
+
       blocks.push(
         <div key={`code-${segmentIndex}`} className="rich-code-block">
           {codeLanguage ? <div className="rich-code-label">{codeLanguage}</div> : null}
@@ -191,7 +214,7 @@ function RichTextMessage(props: { text: string }) {
   });
 
   return <div className="rich-text">{blocks}</div>;
-}
+});
 
 function ActivityIcon(props: { kind: CliActivity["kind"]; status: CliActivity["status"] }) {
   if (props.status === "error" || props.kind === "stderr" || props.kind === "error") {
@@ -309,17 +332,110 @@ function getAccessConfig(preset: AccessPreset): Pick<ChatSession, "approvalMode"
   }
 }
 
-const ACCESS_PRESET_OPTIONS: DropdownOption[] = [
-  { value: "default-permissions", label: "Разрешения по умолчанию" },
-  { value: "auto-review", label: "Автопроверка" },
-  { value: "full-access", label: "Полный доступ" }
-];
-
 const ACCESS_PRESET_OPTIONS_RU: DropdownOption[] = [
   { value: "default-permissions", label: "Разрешения по умолчанию" },
   { value: "auto-review", label: "Автопроверка" },
   { value: "full-access", label: "Полный доступ" }
 ];
+
+const AssistantResponse = memo(function AssistantResponse(props: {
+  message: Message;
+  activities: CliActivity[];
+  isLatest?: boolean;
+  isBusy?: boolean;
+  tick: number;
+  onRegenerate?: (prompt: string) => void;
+  lastUserPrompt?: string;
+}) {
+  const [expanded, setExpanded] = useState(props.isBusy);
+
+  useEffect(() => {
+    if (props.isBusy) {
+      setExpanded(true);
+    }
+  }, [props.isBusy]);
+
+  const runCompleted = props.message.status === "done" || props.message.status === "error";
+  const showRunPanel = props.activities.length > 0 || (props.isLatest && props.isBusy);
+
+  return (
+    <div className={`assistant-response-group ${props.isLatest ? "latest" : ""}`}>
+      {showRunPanel ? (
+        <section className="agent-run-wrap">
+          <button className="agent-run-toggle" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
+            <span>
+              {runCompleted
+                ? `Worked for ${formatElapsed(props.message.durationMs)}`
+                : `Working for ${formatElapsed(undefined, props.message.createdAt, props.tick)}`}
+            </span>
+            <span className={`chevron-icon ${expanded ? "expanded" : ""}`}>
+              <ActionIcon name="chevron" />
+            </span>
+          </button>
+          {expanded ? (
+            <div className="agent-run-panel">
+              <div className="agent-run-timeline">
+                {props.activities.map((activity) => (
+                  <ActivityItem key={activity.id} activity={activity} />
+                ))}
+                {props.isLatest && props.isBusy ? (
+                  <div className="agent-step running ghost">
+                    <div className="agent-step-rail">
+                      <span className="activity-dot running" />
+                    </div>
+                    <div className="agent-step-content">
+                      <div className="agent-step-header">
+                        <div className="agent-step-title">Generating answer</div>
+                        <div className="agent-step-time">Live</div>
+                      </div>
+                      <div className="agent-step-body">Streaming assistant response into the final answer block.</div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      <div className={`assistant-response-block ${props.isLatest ? "latest" : ""} ${props.message.status}`}>
+        {props.message.content ? (
+          <RichTextMessage text={props.message.content} />
+        ) : props.isLatest ? (
+          <div className="assistant-placeholder">
+            <span className="assistant-placeholder-dot" />
+            <span>{props.message.status === "error" ? "The run ended with an error." : "Waiting for the assistant response..."}</span>
+          </div>
+        ) : null}
+        <div className="assistant-response-toolbar">
+          <div className="assistant-response-meta">{formatClock(props.message.createdAt)}</div>
+          <div className="assistant-response-actions">
+            <button
+              className="icon-link-button"
+              onClick={() => void navigator.clipboard.writeText(props.message.content)}
+              disabled={!props.message.content}
+              title="Copy answer"
+              aria-label="Copy answer"
+            >
+              <ActionIcon name="copy" />
+            </button>
+            {props.isLatest && props.lastUserPrompt && props.onRegenerate ? (
+              <button
+                className="icon-link-button"
+                onClick={() => props.onRegenerate?.(props.lastUserPrompt!)}
+                disabled={props.isBusy}
+                title="Regenerate answer"
+                aria-label="Regenerate answer"
+              >
+                <ActionIcon name="retry" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export function ChatView() {
   const activeWorkspace = useAppStore((state) => state.activeWorkspace);
@@ -336,7 +452,6 @@ export function ChatView() {
   const openChat = useAppStore((state) => state.openChat);
   const [prompt, setPrompt] = useState("");
   const [tick, setTick] = useState(Date.now());
-  const [workExpanded, setWorkExpanded] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
 
   const isBusy = cliStatus === "starting" || cliStatus === "streaming" || cliStatus === "busy";
@@ -350,12 +465,6 @@ export function ChatView() {
     return () => window.clearInterval(timer);
   }, [isBusy]);
 
-  useEffect(() => {
-    if (isBusy) {
-      setWorkExpanded(true);
-    }
-  }, [isBusy]);
-
   const handleSend = () => {
     const value = prompt.trim();
     if (!value || isBusy) {
@@ -367,29 +476,26 @@ export function ChatView() {
 
   const chatMessages = activeChat?.messages ?? [];
   const chatActivities = activeChat?.activities ?? [];
-  const lastUserPrompt = [...chatMessages].reverse().find((message) => message.role === "user")?.content;
-  const latestUserIndex = [...chatMessages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "user")?.index ?? -1;
-  const latestUserMessage = latestUserIndex >= 0 ? chatMessages[latestUserIndex] : null;
-  const latestAssistantIndex = [...chatMessages].map((message, index) => ({ message, index })).reverse().find((entry) => entry.message.role === "assistant")?.index ?? -1;
-  const latestAssistant = latestAssistantIndex >= 0 ? chatMessages[latestAssistantIndex] : null;
-  const historicalMessages = latestAssistantIndex >= 0 ? chatMessages.filter((_, index) => index !== latestAssistantIndex) : chatMessages;
 
-  const latestRunActivities = useMemo(() => {
-    if (!latestAssistant) {
-      return chatActivities;
+  const groupedActivities = useMemo(() => {
+    const map = new Map<string, CliActivity[]>();
+    for (const activity of chatActivities) {
+      if (!activity.messageId) continue;
+      if (!map.has(activity.messageId)) {
+        map.set(activity.messageId, []);
+      }
+      map.get(activity.messageId)!.push(activity);
     }
+    return map;
+  }, [chatActivities]);
 
-    const startedAt = new Date((latestUserMessage ?? latestAssistant).createdAt).getTime();
-    return chatActivities.filter((activity) => new Date(activity.createdAt).getTime() >= startedAt);
-  }, [chatActivities, latestAssistant, latestUserMessage]);
+  const lastUserPrompt = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].role === "user") return chatMessages[i].content;
+    }
+    return undefined;
+  }, [chatMessages]);
 
-  const visibleActivities = latestRunActivities.filter((activity) => !(activity.kind === "status" && activity.title === "Structured response"));
-  const runStartedAt = visibleActivities[0]?.createdAt ?? latestUserMessage?.createdAt ?? latestAssistant?.createdAt;
-  const runCompleted = latestAssistant?.status === "done" || latestAssistant?.status === "error";
-  const runEndedAt = runCompleted
-    ? visibleActivities[visibleActivities.length - 1]?.createdAt ?? latestAssistant?.createdAt ?? runStartedAt
-    : undefined;
-  const showRunPanel = visibleActivities.length > 0 || latestAssistant?.status === "streaming";
   const isEmptyChat = chatMessages.length === 0;
   const totalChars = chatMessages.reduce((sum, message) => sum + message.content.length, 0);
   const estimatedTokens = Math.max(1, Math.round(totalChars / 4));
@@ -400,11 +506,8 @@ export function ChatView() {
   const currentModel = activeChat?.session.model ?? settings?.preferredModel ?? "auto";
   const currentAccessPreset = activeChat ? getAccessPreset(activeChat.session) : "default-permissions";
 
-  useEffect(() => {
-    if (!isBusy && showRunPanel) {
-      setWorkExpanded(false);
-    }
-  }, [isBusy, showRunPanel, latestAssistant?.id, latestAssistant?.status]);
+  const lastMessageId = chatMessages[chatMessages.length - 1]?.id;
+  const lastMessageContent = chatMessages[chatMessages.length - 1]?.content;
 
   useEffect(() => {
     const container = messageListRef.current;
@@ -412,7 +515,7 @@ export function ChatView() {
       return;
     }
     container.scrollTop = container.scrollHeight;
-  }, [activeChat?.session.id, chatMessages.length, chatActivities.length, latestAssistant?.content, workExpanded]);
+  }, [activeChat?.session.id, lastMessageId, lastMessageContent]);
 
   if (!activeWorkspace) {
     return (
@@ -458,95 +561,27 @@ export function ChatView() {
           </div>
         ) : null}
 
-        {historicalMessages.map((message) =>
-          message.role === "user" ? (
-            <UserBubble key={message.id} message={message} />
-          ) : (
-            <div key={message.id} className={`assistant-response-block ${message.status}`}>
-              <RichTextMessage text={message.content} />
-              <div className="assistant-response-toolbar">
-                <div className="assistant-response-meta">{formatClock(message.createdAt)}</div>
-                <button className="icon-link-button" onClick={() => void navigator.clipboard.writeText(message.content)} title="Copy answer" aria-label="Copy answer">
-                  <ActionIcon name="copy" />
-                </button>
-              </div>
-            </div>
-          )
-        )}
+        {chatMessages.map((message, index) => {
+          if (message.role === "user") {
+            return <UserBubble key={message.id} message={message} />;
+          }
 
-        {showRunPanel ? (
-          <section className="agent-run-wrap">
-            <button className="agent-run-toggle" onClick={() => setWorkExpanded((value) => !value)} aria-expanded={workExpanded}>
-              <span>{runCompleted ? `Worked for ${formatElapsed(runStartedAt, runEndedAt ? new Date(runEndedAt).getTime() : tick)}` : `Working for ${formatElapsed(runStartedAt, tick)}`}</span>
-              <span className={`chevron-icon ${workExpanded ? "expanded" : ""}`}>
-                <ActionIcon name="chevron" />
-              </span>
-            </button>
-            {workExpanded ? (
-              <div className="agent-run-panel">
-                <div className="agent-run-timeline">
-                  {visibleActivities.map((activity) => (
-                    <ActivityItem key={activity.id} activity={activity} />
-                  ))}
-                  {latestAssistant?.status === "streaming" ? (
-                    <div className="agent-step running ghost">
-                      <div className="agent-step-rail">
-                        <span className="activity-dot running" />
-                      </div>
-                      <div className="agent-step-content">
-                        <div className="agent-step-header">
-                          <div className="agent-step-title">Generating answer</div>
-                          <div className="agent-step-time">Live</div>
-                        </div>
-                        <div className="agent-step-body">Streaming assistant response into the final answer block.</div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-          </section>
-        ) : null}
+          const isLatest = index === chatMessages.length - 1;
+          const activities = groupedActivities.get(message.id) ?? [];
 
-        {latestAssistant ? (
-          <section className={`assistant-response-block latest ${latestAssistant.status}`}>
-            {latestAssistant.content ? (
-              <RichTextMessage text={latestAssistant.content} />
-            ) : (
-              <div className="assistant-placeholder">
-                <span className="assistant-placeholder-dot" />
-                <span>{latestAssistant.status === "error" ? "The run ended with an error." : "Waiting for the assistant response..."}</span>
-              </div>
-            )}
-            <div className="assistant-response-toolbar">
-              <span className="assistant-response-meta">{formatClock(latestAssistant.createdAt)}</span>
-              <div className="assistant-response-actions">
-                <button
-                  className="icon-link-button"
-                  onClick={() => void navigator.clipboard.writeText(latestAssistant.content)}
-                  disabled={!latestAssistant.content}
-                  title="Copy answer"
-                  aria-label="Copy answer"
-                >
-                  <ActionIcon name="copy" />
-                </button>
-                {lastUserPrompt ? (
-                  <button
-                    className="icon-link-button"
-                    onClick={() => {
-                      void sendPrompt(lastUserPrompt);
-                    }}
-                    disabled={isBusy}
-                    title="Regenerate answer"
-                    aria-label="Regenerate answer"
-                  >
-                    <ActionIcon name="retry" />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        ) : null}
+          return (
+            <AssistantResponse
+              key={message.id}
+              message={message}
+              activities={activities}
+              isLatest={isLatest}
+              isBusy={isLatest && isBusy}
+              tick={tick}
+              onRegenerate={sendPrompt}
+              lastUserPrompt={lastUserPrompt}
+            />
+          );
+        })}
       </div>
 
       <div className="composer-wrap">

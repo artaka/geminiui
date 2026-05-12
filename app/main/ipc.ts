@@ -125,7 +125,7 @@ export function registerIpcHandlers(deps: {
 
   cli.subscribe((event) => {
     if (event.type === "assistant_token") {
-      store.appendAssistantToken(event.chatId, event.token);
+      store.appendAssistantToken(event.chatId, event.token, event.messageId);
       return;
     }
 
@@ -142,6 +142,7 @@ export function registerIpcHandlers(deps: {
       store.saveChat({
         ...payload.session,
         cliSessionId: event.sessionId,
+        cliSessionTransport: "acp",
         model: event.model ?? payload.session.model,
         updatedAt: new Date().toISOString()
       });
@@ -156,6 +157,7 @@ export function registerIpcHandlers(deps: {
       store.saveChat({
         ...payload.session,
         cliSessionId: event.sessionId ?? payload.session.cliSessionId,
+        cliSessionTransport: event.sessionId ? "acp" : payload.session.cliSessionTransport,
         model: event.model ?? payload.session.model,
         usage: mergeUsage(payload.session.usage, event.stats),
         updatedAt: new Date().toISOString()
@@ -164,12 +166,13 @@ export function registerIpcHandlers(deps: {
     }
 
     if (event.type === "completed") {
-      store.finalizeAssistant(event.chatId);
+      store.finalizeAssistant(event.chatId, event.messageId, event.durationMs);
       return;
     }
 
     if (event.type === "error") {
-      store.failAssistant(event.chatId, event.message);
+      store.failAssistant(event.chatId, event.message, event.messageId);
+      return;
     }
   });
 
@@ -211,6 +214,7 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle("projects:setActive", (_event, workspaceId: string) => {
     store.updateSettings({ activeWorkspaceId: workspaceId, activeChatId: undefined });
+    cli.activateChat(null);
   });
 
   ipcMain.handle("chat:list", (_event, workspaceId: string) => store.listChats(workspaceId));
@@ -237,11 +241,22 @@ export function registerIpcHandlers(deps: {
     };
     store.saveChat(chat);
     store.updateSettings({ activeChatId: chat.id, activeWorkspaceId: workspaceId });
+    cli.activateChat(chat.id);
     return chat;
   });
 
   ipcMain.handle("chat:open", (_event, chatId: string) => {
-    return store.getChatPayload(chatId);
+    const payload = store.getChatPayload(chatId);
+    if (!payload) {
+      return null;
+    }
+
+    store.updateSettings({
+      activeWorkspaceId: payload.session.workspaceId,
+      activeChatId: chatId
+    });
+    cli.activateChat(chatId);
+    return payload;
   });
 
   ipcMain.handle("chat:delete", (_event, chatId: string) => {
@@ -259,6 +274,7 @@ export function registerIpcHandlers(deps: {
       activeWorkspaceId: nextWorkspaceId,
       activeChatId: nextActiveChatId
     });
+    cli.activateChat(nextActiveChatId ?? null);
   });
 
   ipcMain.handle("chat:update", (_event, payload: { chatId: string; patch: Partial<ChatSession> }) => {
@@ -275,7 +291,7 @@ export function registerIpcHandlers(deps: {
     return updatedChat;
   });
 
-  ipcMain.handle("chat:send", async (_event, payload: { chatId: string; prompt: string; assumeAuthenticated?: boolean }) => {
+  ipcMain.handle("chat:send", async (_event, payload: { chatId: string; prompt: string; assumeAuthenticated?: boolean; userMessageId: string; assistantMessageId: string }) => {
     const chatPayload = store.getChatPayload(payload.chatId);
     if (!chatPayload) {
       throw new Error("Chat not found.");
@@ -289,7 +305,7 @@ export function registerIpcHandlers(deps: {
 
     const createdAt = new Date().toISOString();
     const userMessage: Message = {
-      id: createId("msg"),
+      id: payload.userMessageId,
       chatId: payload.chatId,
       role: "user",
       content: payload.prompt,
@@ -297,7 +313,7 @@ export function registerIpcHandlers(deps: {
       createdAt
     };
     const assistantMessage: Message = {
-      id: createId("msg"),
+      id: payload.assistantMessageId,
       chatId: payload.chatId,
       role: "assistant",
       content: "",
@@ -314,14 +330,16 @@ export function registerIpcHandlers(deps: {
       updatedAt: new Date().toISOString()
     });
     store.updateSettings({ activeChatId: payload.chatId, activeWorkspaceId: workspace.id });
+    cli.activateChat(payload.chatId);
 
     await cli.sendPrompt(payload.chatId, payload.prompt, workspace.path, {
-      sessionId: chatPayload.session.cliSessionId,
+      sessionId: chatPayload.session.cliSessionTransport === "acp" ? chatPayload.session.cliSessionId : undefined,
       model: chatPayload.session.model,
       approvalMode: chatPayload.session.approvalMode,
       sandbox: chatPayload.session.sandbox && settings.preferredSandboxMode !== "off",
       allowSandboxFallback: settings.preferredSandboxMode !== "force",
-      assumeAuthenticated: payload.assumeAuthenticated
+      assumeAuthenticated: payload.assumeAuthenticated,
+      assistantMessageId: payload.assistantMessageId
     });
 
     return { userMessage, assistantMessage };

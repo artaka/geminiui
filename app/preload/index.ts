@@ -31,8 +31,8 @@ const api = {
     open: (chatId: string) => ipcRenderer.invoke("chat:open", chatId) as Promise<ChatSessionPayload | null>,
     delete: (chatId: string) => ipcRenderer.invoke("chat:delete", chatId) as Promise<void>,
     update: (chatId: string, patch: Partial<ChatSession>) => ipcRenderer.invoke("chat:update", { chatId, patch }) as Promise<ChatSession>,
-    send: (chatId: string, prompt: string, assumeAuthenticated?: boolean) =>
-      ipcRenderer.invoke("chat:send", { chatId, prompt, assumeAuthenticated }) as Promise<{
+    send: (chatId: string, prompt: string, assumeAuthenticated?: boolean, userMessageId?: string, assistantMessageId?: string) =>
+      ipcRenderer.invoke("chat:send", { chatId, prompt, assumeAuthenticated, userMessageId, assistantMessageId }) as Promise<{
         userMessage: Message;
         assistantMessage: Message;
       }>,

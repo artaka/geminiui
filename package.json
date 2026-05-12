@@ -1,6 +1,6 @@
 {
   "name": "geminiapp",
-  "version": "0.1.4",
+  "version": "0.1.15",
   "description": "Electron desktop client for Gemini CLI with a Codex-like UX.",
   "main": "dist/main/index.js",
   "author": "OpenAI Codex",

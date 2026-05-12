@@ -10,15 +10,51 @@ function createId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+type AcpPendingRequest = {
+  method: string;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
+
+type AcpProcessState = {
+  chatId: string;
+  workspacePath: string;
+  process: ChildProcessWithoutNullStreams;
+  stdoutBuffer: string;
+  stderrBuffer: string;
+  nextRequestId: number;
+  pendingRequests: Map<number, AcpPendingRequest>;
+  acpSessionId?: string;
+  currentModelId?: string;
+  currentModeId?: string;
+  sandboxEnabled: boolean;
+  allowSandboxFallback: boolean;
+  stopRequested: boolean;
+  cancelRequested: boolean;
+  promptInFlight: boolean;
+  currentAssistantMessageId?: string;
+  startTime?: number;
+};
+
+const ACP_METHODS = {
+  initialize: "initialize",
+  sessionCancel: "session/cancel",
+  sessionLoad: "session/load",
+  sessionNew: "session/new",
+  sessionPrompt: "session/prompt",
+  sessionRequestPermission: "session/request_permission",
+  sessionSetMode: "session/set_mode",
+  sessionSetModel: "session/set_model",
+  sessionUpdate: "session/update"
+} as const;
+
 export class GeminiCliManager {
   private status: CliStatus = "stopped";
-  private process: ChildProcessWithoutNullStreams | null = null;
-  private currentChatId: string | null = null;
-  private stopRequested = false;
   private healthCheckPromise: Promise<CliHealth> | null = null;
   private readonly getMainWindow: () => BrowserWindow | null;
   private cliPath = getRuntimeConfig().cli.defaultExecutable;
   private listeners = new Set<(event: CliEvent) => void>();
+  private activeProcess: AcpProcessState | null = null;
 
   constructor(getMainWindow: () => BrowserWindow | null) {
     this.getMainWindow = getMainWindow;
@@ -34,6 +70,21 @@ export class GeminiCliManager {
 
   getCliPath(): string {
     return this.cliPath;
+  }
+
+  activateChat(nextChatId: string | null): void {
+    if (!this.activeProcess) {
+      return;
+    }
+
+    if (nextChatId && this.activeProcess.chatId === nextChatId) {
+      return;
+    }
+
+    this.terminateProcess(this.activeProcess, {
+      emitUserVisibleStop: true,
+      detail: nextChatId ? "Generation stopped because you switched chats." : "Generation stopped because the active chat changed."
+    });
   }
 
   private getResolvedCliPath(): string {
@@ -282,30 +333,36 @@ export class GeminiCliManager {
       window.webContents.send("cli:event", event);
     }
   }
+private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity["kind"], title: string, body: string, status: CliActivity["status"]): void {
+  const activity: CliActivity = {
+    id: activityId,
+    chatId,
+    messageId: this.activeProcess?.chatId === chatId ? this.activeProcess.currentAssistantMessageId : undefined,
+    kind,
+    title,
+    body,
+    status,
+    createdAt: new Date().toISOString()
+  };
+
+  this.emit({
+    type: "activity",
+    chatId,
+    messageId: activity.messageId,
+    activity,
+    createdAt: activity.createdAt
+  });
+}
 
   private emitActivity(chatId: string, kind: CliActivity["kind"], title: string, body: string, status: CliActivity["status"]): void {
-    const activity: CliActivity = {
-      id: createId("activity"),
-      chatId,
-      kind,
-      title,
-      body,
-      status,
-      createdAt: new Date().toISOString()
-    };
-    this.emit({
-      type: "activity",
-      activity,
-      chatId,
-      createdAt: activity.createdAt
-    });
+    this.emitActivityWithId(chatId, createId("activity"), kind, title, body, status);
   }
 
-  private summarizeStructuredPayload(payload: { response?: string; stats?: unknown; error?: unknown }): string {
+  private summarizeStructuredPayload(payload: { stats?: unknown; stopReason?: string }): string {
     const parts: string[] = [];
 
-    if (payload.response) {
-      parts.push("Assistant response received.");
+    if (payload.stopReason) {
+      parts.push(`Stop reason: ${payload.stopReason}.`);
     }
 
     if (payload.stats && typeof payload.stats === "object") {
@@ -313,10 +370,6 @@ export class GeminiCliManager {
       if (statKeys.length > 0) {
         parts.push(`Attached stats: ${statKeys.join(", ")}.`);
       }
-    }
-
-    if (payload.error) {
-      parts.push(`Reported error payload: ${String(payload.error)}`);
     }
 
     return parts.join("\n") || "Structured Gemini CLI response received.";
@@ -327,109 +380,76 @@ export class GeminiCliManager {
     return normalized.includes("fatalsandboxerror") || (normalized.includes("sandbox image") && normalized.includes("could not be pulled"));
   }
 
-  private isInvalidResumeFailure(text: string): boolean {
-    const normalized = text.toLowerCase();
-    return normalized.includes("invalid session identifier") || normalized.includes("error resuming session");
-  }
+  private shouldRetryWithoutSandbox(
+    options: {
+      sessionId?: string;
+      model?: string;
+      approvalMode?: ApprovalMode;
+      sandbox?: boolean;
+      allowSandboxFallback?: boolean;
+      assumeAuthenticated?: boolean;
+    } | undefined,
+    state?: AcpProcessState | null,
+    error?: unknown
+  ): boolean {
+    if (!options?.sandbox || options.allowSandboxFallback === false) {
+      return false;
+    }
 
-  private parseListedSessionIds(stdout: string): string[] {
-    return stdout
-      .split(/\r?\n/g)
-      .map((line) => line.trim())
+    const combined = [
+      state?.stderrBuffer,
+      error instanceof Error ? error.message : typeof error === "string" ? error : ""
+    ]
       .filter(Boolean)
-      .flatMap((line) => [...line.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)].map((match) => match[0]));
+      .join("\n");
+
+    return this.isSandboxBootstrapFailure(combined);
   }
 
-  private async listProjectSessions(workspacePath: string): Promise<string[]> {
-    const result = await this.runCommand(["--list-sessions"], workspacePath, 12000);
-    if (result.code !== 0) {
-      return [];
-    }
-    return this.parseListedSessionIds(result.stdout);
-  }
-
-  private extractSessionId(payload: unknown): string | undefined {
-    if (!payload || typeof payload !== "object") {
-      return undefined;
-    }
-
-    const record = payload as Record<string, unknown>;
-    const direct = record.sessionId ?? record.session_id;
-    if (typeof direct === "string" && direct.trim()) {
-      return direct;
-    }
-
-    if (record.session && typeof record.session === "object") {
-      const nested = record.session as Record<string, unknown>;
-      const nestedId = nested.id ?? nested.sessionId ?? nested.session_id;
-      if (typeof nestedId === "string" && nestedId.trim()) {
-        return nestedId;
-      }
-    }
-
-    return undefined;
-  }
-
-  private extractModel(payload: unknown): string | undefined {
-    if (!payload || typeof payload !== "object") {
-      return undefined;
-    }
-
-    const record = payload as Record<string, unknown>;
-    const direct = record.model ?? record.modelId ?? record.model_id;
-    if (typeof direct === "string" && direct.trim()) {
-      return direct;
-    }
-
-    if (record.session && typeof record.session === "object") {
-      const nested = record.session as Record<string, unknown>;
-      const nestedModel = nested.model ?? nested.modelId ?? nested.model_id;
-      if (typeof nestedModel === "string" && nestedModel.trim()) {
-        return nestedModel;
-      }
-    }
-
-    return undefined;
-  }
-
-  private extractAssistantChunk(payload: unknown): string | undefined {
-    if (!payload || typeof payload !== "object") {
-      return undefined;
-    }
-
-    const record = payload as Record<string, unknown>;
-    const topLevelRole = record.role ?? record.author;
-
-    if (record.message && typeof record.message === "object") {
-      const message = record.message as Record<string, unknown>;
-      const role = message.role ?? message.author;
-      if (role && role !== "assistant" && role !== "model") {
+  private mapApprovalModeToAcpMode(mode?: ApprovalMode): string | undefined {
+    switch (mode) {
+      case "auto_edit":
+        return "autoEdit";
+      case "default":
+      case "yolo":
+      case "plan":
+        return mode;
+      default:
         return undefined;
-      }
-
-      const messageCandidates = [message.text, message.delta, message.content, message.chunk];
-      for (const candidate of messageCandidates) {
-        if (typeof candidate === "string" && candidate) {
-          return candidate;
-        }
-      }
     }
-
-    if (topLevelRole && topLevelRole !== "assistant" && topLevelRole !== "model") {
-      return undefined;
-    }
-
-    const directCandidates = [record.text, record.delta, record.content, record.chunk];
-    for (const candidate of directCandidates) {
-      if (typeof candidate === "string" && candidate) {
-        return candidate;
-      }
-    }
-
-    return undefined;
   }
 
-  private stringifyUnknown(value: unknown): string {
+  private mapAcpToolStatus(status: unknown): CliActivity["status"] {
+    if (status === "failed") {
+      return "error";
+    }
+    if (status === "completed") {
+      return "done";
+    }
+    return "running";
+  }
+
+  private mapAcpToolKind(kind: unknown): CliActivity["kind"] {
+    if (kind === "execute") {
+      return "command";
+    }
+    if (kind === "fetch" || kind === "read" || kind === "search" || kind === "think") {
+      return "stdout";
+    }
+    return "command";
+  }
+
+  private parseRpcError(errorPayload: unknown, fallbackMessage: string): Error {
+    if (!errorPayload || typeof errorPayload !== "object") {
+      return new Error(fallbackMessage);
+    }
+    const errorRecord = errorPayload as Record<string, unknown>;
+    const message = typeof errorRecord.message === "string" ? errorRecord.message : fallbackMessage;
+    const details = errorRecord.data && typeof errorRecord.data === "object" ? (errorRecord.data as Record<string, unknown>).details : undefined;
+    return new Error(typeof details === "string" && details ? `${message}: ${details}` : message);
+  }
+
+  private safeStringify(value: unknown): string {
     if (typeof value === "string") {
       return value;
     }
@@ -437,6 +457,485 @@ export class GeminiCliManager {
       return JSON.stringify(value, null, 2);
     } catch {
       return String(value);
+    }
+  }
+
+  private extractTextFromAcpContent(content: unknown): string {
+    if (!content || typeof content !== "object") {
+      return "";
+    }
+
+    const record = content as Record<string, unknown>;
+    const directType = record.type;
+    if (directType === "text" && typeof record.text === "string") {
+      return record.text;
+    }
+
+    if (directType === "content" && record.content && typeof record.content === "object") {
+      const nested = record.content as Record<string, unknown>;
+      if (nested.type === "text" && typeof nested.text === "string") {
+        return nested.text;
+      }
+    }
+
+    return "";
+  }
+
+  private renderAcpToolBody(update: Record<string, unknown>): string {
+    const parts: string[] = [];
+    const kind = typeof update.kind === "string" ? update.kind : undefined;
+    const status = typeof update.status === "string" ? update.status : undefined;
+    const title = typeof update.title === "string" ? update.title : undefined;
+
+    if (title) {
+      parts.push(title);
+    }
+    if (kind) {
+      parts.push(`kind: ${kind}`);
+    }
+    if (status) {
+      parts.push(`status: ${status}`);
+    }
+
+    const locations = Array.isArray(update.locations) ? update.locations : [];
+    if (locations.length > 0) {
+      parts.push(`locations: ${this.safeStringify(locations)}`);
+    }
+
+    const content = Array.isArray(update.content) ? update.content : [];
+    if (content.length > 0) {
+      const renderedContent = content
+        .map((item) => this.extractTextFromAcpContent(item) || this.safeStringify(item))
+        .filter(Boolean)
+        .join("\n");
+      if (renderedContent) {
+        parts.push(renderedContent);
+      }
+    }
+
+    if (update.rawInput !== undefined) {
+      parts.push(`rawInput: ${this.safeStringify(update.rawInput)}`);
+    }
+    if (update.rawOutput !== undefined) {
+      parts.push(`rawOutput: ${this.safeStringify(update.rawOutput)}`);
+    }
+
+    return parts.join("\n");
+  }
+
+  private extractQuotaStats(result: unknown): unknown {
+    if (!result || typeof result !== "object") {
+      return undefined;
+    }
+
+    const record = result as Record<string, unknown>;
+    const meta = record._meta;
+    if (!meta || typeof meta !== "object") {
+      return undefined;
+    }
+
+    const quota = (meta as Record<string, unknown>).quota;
+    return quota;
+  }
+
+  private sendRpcRequest(state: AcpProcessState, method: string, params: Record<string, unknown>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = ++state.nextRequestId;
+      state.pendingRequests.set(id, { method, resolve, reject });
+      state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`, "utf8", (error) => {
+        if (!error) {
+          return;
+        }
+        state.pendingRequests.delete(id);
+        reject(error);
+      });
+    });
+  }
+
+  private sendRpcNotification(state: AcpProcessState, method: string, params: Record<string, unknown>): void {
+    state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  }
+
+  private sendRpcResponse(state: AcpProcessState, id: number, result: Record<string, unknown>): void {
+    state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+  }
+
+  private sendRpcError(state: AcpProcessState, id: number, code: number, message: string): void {
+    state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } })}\n`);
+  }
+
+  private async initializeAcp(state: AcpProcessState): Promise<void> {
+    await this.sendRpcRequest(state, ACP_METHODS.initialize, {
+      protocolVersion: 1,
+      clientInfo: {
+        name: "geminiapp",
+        version: "0.1.15"
+      },
+      clientCapabilities: {
+        auth: { terminal: false },
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false
+      }
+    });
+  }
+
+  private createAcpProcess(chatId: string, workspacePath: string, sandbox: boolean, allowSandboxFallback: boolean): AcpProcessState {
+    const args = ["--acp", "--skip-trust"];
+    if (sandbox) {
+      args.push("--sandbox");
+    }
+
+    const executable = this.getResolvedCliPath();
+    const process = this.spawnCli(args, workspacePath);
+    const state: AcpProcessState = {
+      chatId,
+      workspacePath,
+      process,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      nextRequestId: 0,
+      pendingRequests: new Map<number, AcpPendingRequest>(),
+      sandboxEnabled: sandbox,
+      allowSandboxFallback,
+      stopRequested: false,
+      cancelRequested: false,
+      promptInFlight: false,
+      currentAssistantMessageId: undefined
+    };
+
+    this.emitActivity(chatId, "command", "gemini session", [executable, ...args].join(" "), "running");
+
+    process.stdout.on("data", (chunk: Buffer) => {
+      state.stdoutBuffer += chunk.toString("utf8");
+      this.status = state.promptInFlight ? "streaming" : this.status;
+
+      while (state.stdoutBuffer.includes("\n")) {
+        const newlineIndex = state.stdoutBuffer.indexOf("\n");
+        const line = state.stdoutBuffer.slice(0, newlineIndex).trim();
+        state.stdoutBuffer = state.stdoutBuffer.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+        this.handleAcpStdoutLine(state, line);
+      }
+    });
+
+    process.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      state.stderrBuffer += text;
+      this.emitActivity(chatId, "stderr", "stderr", text, "error");
+    });
+
+    process.on("close", (code) => {
+      const errorMessage = state.stderrBuffer.trim() || `Gemini CLI ACP exited with code ${code ?? -1}.`;
+      for (const [, pending] of state.pendingRequests) {
+        pending.reject(new Error(errorMessage));
+      }
+      state.pendingRequests.clear();
+
+      if (this.activeProcess === state) {
+        this.activeProcess = null;
+      }
+
+      const sandboxRetryInProgress =
+        state.promptInFlight && state.sandboxEnabled && state.allowSandboxFallback && this.isSandboxBootstrapFailure(errorMessage);
+
+      if (sandboxRetryInProgress) {
+        return;
+      }
+
+      if (!state.stopRequested && state.promptInFlight) {
+        this.status = "error";
+        this.emit({
+          type: "error",
+          chatId: state.chatId,
+          createdAt: new Date().toISOString(),
+          message: errorMessage,
+          messageId: state.currentAssistantMessageId
+        });
+      }
+
+      if (!state.stopRequested && !state.promptInFlight) {
+        this.status = "stopped";
+      }
+    });
+
+    return state;
+  }
+
+  private handleAcpStdoutLine(state: AcpProcessState, line: string): void {
+    try {
+      const payload = JSON.parse(line) as Record<string, unknown>;
+
+      if (typeof payload.method === "string") {
+        if (payload.method === ACP_METHODS.sessionUpdate) {
+          this.handleAcpSessionUpdate(state, payload);
+          return;
+        }
+
+        if (payload.method === ACP_METHODS.sessionRequestPermission) {
+          this.handleAcpPermissionRequest(state, payload);
+          return;
+        }
+
+        if (typeof payload.id === "number") {
+          this.sendRpcError(state, payload.id, -32601, `Unsupported client method: ${payload.method}`);
+        }
+        return;
+      }
+
+      if (typeof payload.id === "number") {
+        const pending = state.pendingRequests.get(payload.id);
+        if (!pending) {
+          return;
+        }
+        state.pendingRequests.delete(payload.id);
+
+        if (payload.error) {
+          pending.reject(this.parseRpcError(payload.error, `${pending.method} failed.`));
+          return;
+        }
+
+        pending.resolve(payload.result);
+      }
+    } catch {
+      this.emitActivity(state.chatId, "stdout", "Gemini output", line, "done");
+    }
+  }
+
+  private handleAcpPermissionRequest(state: AcpProcessState, payload: Record<string, unknown>): void {
+    const requestId = typeof payload.id === "number" ? payload.id : undefined;
+    if (!requestId) {
+      return;
+    }
+
+    const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
+    const options = Array.isArray(params.options) ? params.options as Array<Record<string, unknown>> : [];
+    const selected = this.selectPermissionOption(options, state.currentModeId);
+
+    if (!selected) {
+      this.sendRpcResponse(state, requestId, {
+        outcome: {
+          outcome: "cancelled"
+        }
+      });
+      return;
+    }
+
+    this.sendRpcResponse(state, requestId, {
+      outcome: {
+        outcome: "selected",
+        optionId: selected
+      }
+    });
+  }
+
+  private selectPermissionOption(options: Array<Record<string, unknown>>, currentModeId?: string): string | undefined {
+    const selectByKind = (kind: string) =>
+      options.find((option) => option.kind === kind && typeof option.optionId === "string")?.optionId as string | undefined;
+
+    if (currentModeId === "plan") {
+      return selectByKind("reject_once");
+    }
+
+    if (currentModeId === "yolo") {
+      return selectByKind("allow_always") ?? selectByKind("allow_once");
+    }
+
+    if (currentModeId === "autoEdit") {
+      return selectByKind("allow_once") ?? selectByKind("allow_always");
+    }
+
+    return selectByKind("allow_once") ?? selectByKind("allow_always");
+  }
+
+  private handleAcpSessionUpdate(state: AcpProcessState, payload: Record<string, unknown>): void {
+    const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
+    const update = params.update && typeof params.update === "object" ? params.update as Record<string, unknown> : null;
+    if (!update) {
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const updateType = update.sessionUpdate;
+
+    if (updateType === "agent_message_chunk") {
+      const token = this.extractTextFromAcpContent(update.content);
+      if (token) {
+        this.status = "streaming";
+        this.emit({
+          type: "assistant_token",
+          chatId: state.chatId,
+          createdAt,
+          token,
+          messageId: state.currentAssistantMessageId
+        });
+      }
+      return;
+    }
+
+    if (updateType === "tool_call" || updateType === "tool_call_update") {
+      const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : createId("acp_tool");
+      const title = typeof update.title === "string" && update.title.trim() ? update.title : "Tool call";
+      this.emitActivityWithId(
+        state.chatId,
+        `acp_tool_${toolCallId}`,
+        this.mapAcpToolKind(update.kind),
+        title,
+        this.renderAcpToolBody(update),
+        this.mapAcpToolStatus(update.status)
+      );
+      return;
+    }
+
+    if (updateType === "current_mode_update") {
+      state.currentModeId = typeof update.currentModeId === "string" ? update.currentModeId : state.currentModeId;
+      return;
+    }
+
+    if (updateType === "session_info_update") {
+      return;
+    }
+
+    if (updateType === "usage_update" || updateType === "available_commands_update" || updateType === "config_option_update" || updateType === "plan" || updateType === "user_message_chunk" || updateType === "agent_thought_chunk") {
+      return;
+    }
+
+    this.emitActivity(state.chatId, "stdout", "ACP update", this.safeStringify(update), "done");
+  }
+
+  private applySessionState(state: AcpProcessState, sessionId: string, result: unknown): void {
+    state.acpSessionId = sessionId;
+
+    if (result && typeof result === "object") {
+      const record = result as Record<string, unknown>;
+      if (record.models && typeof record.models === "object") {
+        const currentModelId = (record.models as Record<string, unknown>).currentModelId;
+        if (typeof currentModelId === "string") {
+          state.currentModelId = currentModelId;
+        }
+      }
+      if (record.modes && typeof record.modes === "object") {
+        const currentModeId = (record.modes as Record<string, unknown>).currentModeId;
+        if (typeof currentModeId === "string") {
+          state.currentModeId = currentModeId;
+        }
+      }
+    }
+
+    this.emit({
+      type: "session_initialized",
+      chatId: state.chatId,
+      createdAt: new Date().toISOString(),
+      sessionId,
+      model: state.currentModelId
+    });
+  }
+
+  private async openOrLoadSession(state: AcpProcessState, sessionId?: string): Promise<void> {
+    if (state.acpSessionId) {
+      return;
+    }
+
+    if (sessionId) {
+      try {
+        const result = await this.sendRpcRequest(state, ACP_METHODS.sessionLoad, {
+          cwd: state.workspacePath,
+          mcpServers: [],
+          sessionId
+        });
+        this.applySessionState(state, sessionId, result);
+        return;
+      } catch (error) {
+        this.emitActivity(state.chatId, "status", "Session reset", `Failed to load saved session ${sessionId}. Starting a fresh ACP session instead.`, "done");
+      }
+    }
+
+    const result = await this.sendRpcRequest(state, ACP_METHODS.sessionNew, {
+      cwd: state.workspacePath,
+      mcpServers: []
+    });
+    const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
+    const nextSessionId = typeof record.sessionId === "string" ? record.sessionId : createId("acp_session");
+    this.applySessionState(state, nextSessionId, result);
+  }
+
+  private async synchronizeSessionSettings(state: AcpProcessState, options?: { model?: string; approvalMode?: ApprovalMode }): Promise<void> {
+    if (!state.acpSessionId) {
+      return;
+    }
+
+    const targetMode = this.mapApprovalModeToAcpMode(options?.approvalMode);
+    if (targetMode && targetMode !== state.currentModeId) {
+      await this.sendRpcRequest(state, ACP_METHODS.sessionSetMode, {
+        sessionId: state.acpSessionId,
+        modeId: targetMode
+      });
+      state.currentModeId = targetMode;
+    }
+
+    if (options?.model && options.model !== state.currentModelId) {
+      await this.sendRpcRequest(state, ACP_METHODS.sessionSetModel, {
+        sessionId: state.acpSessionId,
+        modelId: options.model
+      });
+      state.currentModelId = options.model;
+    }
+  }
+
+  private async ensureProcess(
+    chatId: string,
+    workspacePath: string,
+    options?: {
+      sessionId?: string;
+      model?: string;
+      approvalMode?: ApprovalMode;
+      sandbox?: boolean;
+      allowSandboxFallback?: boolean;
+    }
+  ): Promise<{ state: AcpProcessState; startedFresh: boolean }> {
+    const needsFreshProcess =
+      !this.activeProcess ||
+      this.activeProcess.chatId !== chatId ||
+      this.activeProcess.workspacePath !== workspacePath ||
+      this.activeProcess.sandboxEnabled !== (options?.sandbox ?? false);
+
+    if (needsFreshProcess && this.activeProcess) {
+      this.terminateProcess(this.activeProcess, {
+        emitUserVisibleStop: false
+      });
+    }
+
+    if (!needsFreshProcess && this.activeProcess) {
+      await this.synchronizeSessionSettings(this.activeProcess, options);
+      return {
+        state: this.activeProcess,
+        startedFresh: false
+      };
+    }
+
+    try {
+      const state = this.createAcpProcess(chatId, workspacePath, options?.sandbox ?? false, options?.allowSandboxFallback ?? true);
+      this.activeProcess = state;
+      await this.initializeAcp(state);
+      await this.openOrLoadSession(state, options?.sessionId);
+      await this.synchronizeSessionSettings(state, options);
+      return { state, startedFresh: true };
+    } catch (error) {
+      const activeProcess = this.activeProcess;
+      const stderr = activeProcess?.stderrBuffer ?? "";
+      if (options?.sandbox && options.allowSandboxFallback !== false && this.isSandboxBootstrapFailure(stderr)) {
+        this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
+        if (activeProcess) {
+          this.terminateProcess(activeProcess, { emitUserVisibleStop: false });
+        }
+        return await this.ensureProcess(chatId, workspacePath, {
+          ...options,
+          sandbox: false,
+          allowSandboxFallback: false
+        });
+      }
+      throw error;
     }
   }
 
@@ -465,6 +964,7 @@ export class GeminiCliManager {
       sandbox?: boolean;
       allowSandboxFallback?: boolean;
       assumeAuthenticated?: boolean;
+      assistantMessageId?: string;
     }
   ): Promise<void> {
     const health = options?.assumeAuthenticated
@@ -489,264 +989,210 @@ export class GeminiCliManager {
       return;
     }
 
-    if (this.process) {
-      this.stop(chatId);
-    }
-
-    this.currentChatId = chatId;
-    this.status = "starting";
-    this.emit({ type: "status", chatId, createdAt: new Date().toISOString(), status: "starting", detail: "Launching Gemini CLI" });
-
-    let validatedSessionId = options?.sessionId;
-    const sessionsBeforeLaunch = await this.listProjectSessions(workspacePath);
-    if (validatedSessionId) {
-      if (sessionsBeforeLaunch.length > 0 && !sessionsBeforeLaunch.includes(validatedSessionId)) {
-        if (sessionsBeforeLaunch.length === 1) {
-          this.emitActivity(chatId, "status", "Session remapped", `Saved session ${validatedSessionId} was not found. Using ${sessionsBeforeLaunch[0]} from this workspace instead.`, "done");
-          validatedSessionId = sessionsBeforeLaunch[0];
-        } else {
-          this.emitActivity(chatId, "status", "Session reset", `Saved session ${validatedSessionId} was not found in this workspace. Starting a fresh Gemini CLI session.`, "done");
-          validatedSessionId = undefined;
+    let ensured: { state: AcpProcessState; startedFresh: boolean };
+    try {
+      ensured = await this.ensureProcess(chatId, workspacePath, options);
+    } catch (error) {
+      if (this.shouldRetryWithoutSandbox(options, this.activeProcess, error)) {
+        if (this.activeProcess) {
+          this.terminateProcess(this.activeProcess, { emitUserVisibleStop: false });
         }
-      }
-    }
-
-    const runtimeConfig = getRuntimeConfig();
-    const launchPrompt = async (launchOptions: { sessionId?: string; sandbox: boolean; allowSandboxFallback: boolean; retryingInvalidResume?: boolean }): Promise<void> => {
-      const args = ["--output-format", runtimeConfig.cli.chat.outputFormat, "--skip-trust"];
-      if (launchOptions.sessionId) {
-        args.push("--resume", launchOptions.sessionId);
-      }
-      if (options?.model) {
-        args.push("-m", options.model);
-      }
-      if (options?.approvalMode) {
-        args.push("--approval-mode", options.approvalMode);
-      }
-      if (launchOptions.sandbox) {
-        args.push("--sandbox");
-      }
-
-      const executable = this.getResolvedCliPath();
-      this.process = this.spawnCli(args, workspacePath);
-      this.stopRequested = false;
-      this.process.stdin.write(prompt);
-      this.process.stdin.end();
-
-      this.status = "busy";
-      this.emitActivity(chatId, "command", "gemini request", [executable, ...args].join(" "), "running");
-
-      let stdoutLineBuffer = "";
-      let streamedAssistantText = "";
-      let stderrBuffer = "";
-      let activeCliSessionId = launchOptions.sessionId;
-      let activeModel = options?.model;
-
-      this.process.stdout.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        stdoutLineBuffer += text;
-        this.status = "streaming";
-
-        while (stdoutLineBuffer.includes("\n")) {
-          const newlineIndex = stdoutLineBuffer.indexOf("\n");
-          const line = stdoutLineBuffer.slice(0, newlineIndex).trim();
-          stdoutLineBuffer = stdoutLineBuffer.slice(newlineIndex + 1);
-          if (!line) {
-            continue;
-          }
-
-          try {
-            const payload = JSON.parse(line) as Record<string, unknown>;
-            const eventType = typeof payload.type === "string" ? payload.type : undefined;
-
-            if (eventType === "init") {
-              const sessionId = this.extractSessionId(payload);
-              const model = this.extractModel(payload);
-              activeCliSessionId = sessionId ?? activeCliSessionId;
-              activeModel = model ?? activeModel;
-              if (sessionId) {
-                this.emit({
-                  type: "session_initialized",
-                  chatId,
-                  createdAt: new Date().toISOString(),
-                  sessionId,
-                  model
-                });
-              }
-              continue;
-            }
-
-            if (eventType === "message") {
-              const assistantChunk = this.extractAssistantChunk(payload);
-              if (assistantChunk) {
-                streamedAssistantText += assistantChunk;
-                this.emit({
-                  type: "assistant_token",
-                  chatId,
-                  createdAt: new Date().toISOString(),
-                  token: assistantChunk
-                });
-              }
-              continue;
-            }
-
-            if (eventType === "tool_use") {
-              this.emitActivity(chatId, "command", "Tool call", this.stringifyUnknown(payload), "running");
-              continue;
-            }
-
-            if (eventType === "tool_result") {
-              this.emitActivity(chatId, "stdout", "Tool result", this.stringifyUnknown(payload), "done");
-              continue;
-            }
-
-            if (eventType === "error") {
-              this.emitActivity(chatId, "stderr", "Gemini warning", this.stringifyUnknown(payload), "error");
-              continue;
-            }
-
-            if (eventType === "result") {
-              const response = typeof payload.response === "string" ? payload.response : undefined;
-              const stats = payload.stats;
-              activeCliSessionId = this.extractSessionId(payload) ?? activeCliSessionId;
-              activeModel = this.extractModel(payload) ?? activeModel;
-
-              if (response && !streamedAssistantText) {
-                this.emit({
-                  type: "assistant_token",
-                  chatId,
-                  createdAt: new Date().toISOString(),
-                  token: response
-                });
-              }
-
-              this.emit({
-                type: "run_summary",
-                chatId,
-                createdAt: new Date().toISOString(),
-                sessionId: activeCliSessionId,
-                model: activeModel,
-                response,
-                stats
-              });
-              this.emitActivity(chatId, "status", "Structured response", this.summarizeStructuredPayload({ response, stats, error: payload.error }), "done");
-            }
-          } catch {
-            this.emitActivity(chatId, "stdout", "Gemini output", line, "done");
-          }
-        }
-      });
-
-      this.process.stderr.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        stderrBuffer += text;
-        this.emitActivity(chatId, "stderr", "stderr", text, "error");
-      });
-
-      this.process.on("close", async (code) => {
-        const createdAt = new Date().toISOString();
-        if (this.stopRequested) {
-          this.process = null;
-          this.currentChatId = null;
-          this.stopRequested = false;
-          return;
-        }
-
-        if (code === 0) {
-          const remainder = stdoutLineBuffer.trim();
-          if (remainder) {
-            this.emitActivity(chatId, "stdout", "Gemini output", remainder, "done");
-          }
-
-          const sessionsAfterLaunch = await this.listProjectSessions(workspacePath);
-          const newSessions = sessionsAfterLaunch.filter((sessionId) => !sessionsBeforeLaunch.includes(sessionId));
-          const discoveredSessionId = activeCliSessionId ?? (newSessions.length === 1 ? newSessions[0] : undefined);
-          if (discoveredSessionId && discoveredSessionId !== activeCliSessionId) {
-            this.emit({
-              type: "session_initialized",
-              chatId,
-              createdAt: new Date().toISOString(),
-              sessionId: discoveredSessionId,
-              model: activeModel
-            });
-          }
-
-          this.status = "connected";
-          this.emitActivity(chatId, "status", "Gemini CLI finished", `Exit code ${code}`, "done");
-          this.emit({ type: "status", chatId, createdAt, status: "connected", detail: "Gemini CLI finished" });
-          this.emit({ type: "completed", chatId, createdAt });
-          this.process = null;
-          this.currentChatId = null;
-          return;
-        }
-
-        if (launchOptions.sessionId && !launchOptions.retryingInvalidResume && this.isInvalidResumeFailure(stderrBuffer)) {
-          this.emitActivity(chatId, "status", "Session reset", `Gemini CLI rejected saved session ${launchOptions.sessionId}. Retrying without --resume.`, "done");
-          this.process = null;
-          this.currentChatId = null;
-          this.status = "starting";
-          await launchPrompt({
-            sessionId: undefined,
-            sandbox: launchOptions.sandbox,
-            allowSandboxFallback: launchOptions.allowSandboxFallback,
-            retryingInvalidResume: true
-          });
-          return;
-        }
-
-        if (launchOptions.sandbox && launchOptions.allowSandboxFallback && this.isSandboxBootstrapFailure(stderrBuffer)) {
-          this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
-          this.process = null;
-          this.currentChatId = null;
-          this.status = "starting";
-          await launchPrompt({
-            sessionId: activeCliSessionId,
-            sandbox: false,
-            allowSandboxFallback: false
-          });
-          return;
-        }
-
-        this.status = "error";
-        this.emit({
-          type: "error",
-          chatId,
-          createdAt,
-          message: `Gemini CLI exited with code ${code ?? -1}.`
+        this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
+        await this.sendPrompt(chatId, prompt, workspacePath, {
+          ...options,
+          sandbox: false,
+          allowSandboxFallback: false
         });
-        this.process = null;
-        this.currentChatId = null;
-      });
-    };
+        return;
+      }
 
-    await launchPrompt({
-      sessionId: validatedSessionId,
-      sandbox: options?.sandbox ?? false,
-      allowSandboxFallback: options?.allowSandboxFallback ?? true
+      this.status = "error";
+      const errorState = this.activeProcess;
+      const durationMs = errorState?.startTime ? Date.now() - errorState.startTime : undefined;
+      const assistantMessageId = options?.assistantMessageId ?? errorState?.currentAssistantMessageId;
+
+      this.emit({
+        type: "error",
+        chatId,
+        createdAt: new Date().toISOString(),
+        message: error instanceof Error ? error.message : String(error),
+        messageId: assistantMessageId
+      });
+      this.emit({
+        type: "completed",
+        chatId,
+        createdAt: new Date().toISOString(),
+        messageId: assistantMessageId,
+        durationMs
+      });
+      return;
+    }
+
+    const { state, startedFresh } = ensured;
+
+    this.status = startedFresh ? "starting" : "busy";
+    this.emit({
+      type: "status",
+      chatId,
+      createdAt: new Date().toISOString(),
+      status: startedFresh ? "starting" : "busy",
+      detail: startedFresh ? "Launching Gemini CLI ACP session" : "Reusing Gemini CLI ACP session"
     });
+
+    state.promptInFlight = true;
+    state.cancelRequested = false;
+    state.currentAssistantMessageId = options?.assistantMessageId;
+    state.startTime = Date.now();
+    this.emitActivity(chatId, "status", startedFresh ? "Persistent session ready" : "Using persistent session", `Session ${state.acpSessionId ?? "pending"} in ${path.basename(workspacePath)}`, "done");
+
+    try {
+      const result = await this.sendRpcRequest(state, ACP_METHODS.sessionPrompt, {
+        sessionId: state.acpSessionId,
+        prompt: [
+          {
+            type: "text",
+            text: prompt
+          }
+        ]
+      });
+      const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : {};
+      const stopReason = typeof resultRecord.stopReason === "string" ? resultRecord.stopReason : undefined;
+      const stats = this.extractQuotaStats(result);
+
+      if (state.cancelRequested || stopReason === "cancelled") {
+        this.status = "stopped";
+        this.emitActivity(chatId, "status", "Generation stopped", "The active Gemini CLI generation was cancelled.", "done");
+        this.emit({
+          type: "status",
+          chatId,
+          createdAt: new Date().toISOString(),
+          status: "stopped",
+          detail: "Generation stopped by user"
+        });
+      } else {
+        this.status = "connected";
+        this.emit({
+          type: "status",
+          chatId,
+          createdAt: new Date().toISOString(),
+          status: "connected",
+          detail: "Gemini CLI finished"
+        });
+      }
+
+      this.emit({
+        type: "run_summary",
+        chatId,
+        createdAt: new Date().toISOString(),
+        sessionId: state.acpSessionId,
+        model: state.currentModelId,
+        stats
+      });
+      this.emitActivity(chatId, "status", "Structured response", this.summarizeStructuredPayload({ stats, stopReason }), "done");
+      const durationMs = state.startTime ? Date.now() - state.startTime : undefined;
+      this.emit({ type: "completed", chatId, createdAt: new Date().toISOString(), messageId: state.currentAssistantMessageId, durationMs });
+    } catch (error) {
+      if (state.stopRequested || state.cancelRequested) {
+        return;
+      }
+
+      if (this.shouldRetryWithoutSandbox(options, state, error)) {
+        this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
+        this.terminateProcess(state, { emitUserVisibleStop: false });
+        await this.sendPrompt(chatId, prompt, workspacePath, {
+          ...options,
+          sandbox: false,
+          allowSandboxFallback: false
+        });
+        return;
+      }
+
+      this.status = "error";
+      const durationMs = state.startTime ? Date.now() - state.startTime : undefined;
+      this.emit({
+        type: "error",
+        chatId,
+        createdAt: new Date().toISOString(),
+        message: error instanceof Error ? error.message : String(error),
+        messageId: state.currentAssistantMessageId
+      });
+      this.emit({
+        type: "completed",
+        chatId,
+        createdAt: new Date().toISOString(),
+        messageId: state.currentAssistantMessageId,
+        durationMs
+      });
+    } finally {
+      state.promptInFlight = false;
+      state.cancelRequested = false;
+      state.currentAssistantMessageId = undefined;
+      if (this.status === "busy") {
+        this.status = "connected";
+      }
+    }
   }
 
   stop(chatId?: string): void {
-    if (!this.process) {
+    const state = this.activeProcess;
+    if (!state || !state.acpSessionId) {
       return;
     }
-    const effectiveChatId = chatId ?? this.currentChatId ?? "unknown";
-    this.stopRequested = true;
-    this.process.kill();
-    this.status = "stopped";
-    this.emitActivity(effectiveChatId, "status", "Generation stopped", "The active Gemini CLI process was terminated.", "done");
-    this.emit({
-      type: "status",
-      chatId: effectiveChatId,
-      createdAt: new Date().toISOString(),
-      status: "stopped",
-      detail: "Generation stopped by user"
+
+    if (chatId && state.chatId !== chatId) {
+      return;
+    }
+
+    state.cancelRequested = true;
+    this.terminateProcess(state, {
+      emitUserVisibleStop: true,
+      detail: "Generation stopped by user."
     });
-    this.process = null;
-    this.currentChatId = null;
+  }
+
+  private terminateProcess(state: AcpProcessState, options: { emitUserVisibleStop: boolean; detail?: string }): void {
+    if (state.stopRequested) {
+      return;
+    }
+
+    state.stopRequested = true;
+    state.cancelRequested = false;
+    state.promptInFlight = false;
+
+    if (options.emitUserVisibleStop) {
+      this.status = "stopped";
+      this.emitActivity(state.chatId, "status", "Generation stopped", options.detail ?? "The active Gemini CLI process was terminated.", "done");
+      this.emit({
+        type: "status",
+        chatId: state.chatId,
+        createdAt: new Date().toISOString(),
+        status: "stopped",
+        detail: options.detail ?? "Generation stopped"
+      });
+      const durationMs = state.startTime ? Date.now() - state.startTime : undefined;
+      this.emit({
+        type: "completed",
+        chatId: state.chatId,
+        createdAt: new Date().toISOString(),
+        messageId: state.currentAssistantMessageId,
+        durationMs
+      });
+    }
+
+    try {
+      state.process.kill();
+    } catch {
+      // ignore kill errors during cleanup
+    }
+
+    if (this.activeProcess === state) {
+      this.activeProcess = null;
+    }
   }
 
   shutdown(): void {
-    this.stop();
+    if (this.activeProcess) {
+      this.terminateProcess(this.activeProcess, { emitUserVisibleStop: false });
+    }
   }
 }
