@@ -3,8 +3,10 @@ import { ChatSession } from "@shared/types";
 import { useAppStore } from "../store";
 import { ChatView } from "./ChatView";
 import { SettingsView } from "./SettingsView";
+import { SearchView } from "./SearchView";
+import { ProjectsView } from "./ProjectsView";
 
-function SidebarIcon(props: { name: "toggle" | "new" | "search" | "projects" | "tools" | "automations" | "workspace" | "settings" | "login" | "check" | "minimize" | "maximize" | "close" }) {
+export function SidebarIcon(props: { name: "toggle" | "new" | "search" | "projects" | "tools" | "automations" | "workspace" | "settings" | "login" | "check" | "minimize" | "maximize" | "close" }) {
   switch (props.name) {
     case "toggle":
       return (
@@ -142,6 +144,7 @@ export function AppShell() {
   const activeWorkspace = useAppStore((state) => state.activeWorkspace);
   const chats = useAppStore((state) => state.chats);
   const activeChat = useAppStore((state) => state.activeChat);
+  const activeRunChatId = useAppStore((state) => state.activeRunChatId);
   const cliStatus = useAppStore((state) => state.cliStatus);
   const addWorkspace = useAppStore((state) => state.addWorkspace);
   const selectWorkspace = useAppStore((state) => state.selectWorkspace);
@@ -238,8 +241,8 @@ export function AppShell() {
           <div className="sidebar-static">
             <div className="nav-section">
               <SidebarButton icon={<SidebarIcon name="new" />} label="New chat" collapsed={collapsed} className="primary" disabled={!activeWorkspace} onClick={() => void createChat()} />
-              <SidebarButton icon={<SidebarIcon name="search" />} label="Search Soon" collapsed={collapsed} disabled title="Planned for a future iteration" />
-              <SidebarButton icon={<SidebarIcon name="projects" />} label="Projects Soon" collapsed={collapsed} disabled title="Workspace manager is still part of the current sidebar" />
+              <SidebarButton icon={<SidebarIcon name="search" />} label="Search" collapsed={collapsed} className={activeScreen === "search" ? "selected" : ""} onClick={() => setScreen("search")} />
+              <SidebarButton icon={<SidebarIcon name="projects" />} label="Projects" collapsed={collapsed} className={activeScreen === "projects" ? "selected" : ""} onClick={() => setScreen("projects")} />
               <SidebarButton icon={<SidebarIcon name="tools" />} label="Tools Soon" collapsed={collapsed} disabled title="Tool activity is currently shown inside chat logs" />
               <SidebarButton icon={<SidebarIcon name="automations" />} label="Automations Soon" collapsed={collapsed} disabled title="Automations are planned for a future iteration" />
             </div>
@@ -276,7 +279,7 @@ export function AppShell() {
                               <div key={chat.id} className={`chat-row ${activeChat?.session.id === chat.id ? "active" : ""}`}>
                                 <button className={`chat-list-item chat-tree-item ${activeChat?.session.id === chat.id ? "active" : ""}`} onClick={() => handleOpenChat(chat.id)} title={chat.title}>
                                   <span className="chat-list-title">{chat.title}</span>
-                                  <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>
+                                  {activeRunChatId === chat.id ? <span className="chat-running-spinner" aria-label="Agent running" /> : <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>}
                                 </button>
                                 <button
                                   className="chat-delete-button"
@@ -307,7 +310,15 @@ export function AppShell() {
         </aside>
 
         <main className="content">
-          {activeScreen === "settings" ? <SettingsView /> : <ChatView />}
+          {activeScreen === "settings" ? (
+            <SettingsView />
+          ) : activeScreen === "search" ? (
+            <SearchView />
+          ) : activeScreen === "projects" ? (
+            <ProjectsView />
+          ) : (
+            <ChatView />
+          )}
         </main>
       </div>
 

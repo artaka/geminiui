@@ -22,7 +22,6 @@ export function SettingsView() {
   const installCli = useAppStore((state) => state.installCli);
   const setupSandbox = useAppStore((state) => state.setupSandbox);
   const addWorkspace = useAppStore((state) => state.addWorkspace);
-  const setScreen = useAppStore((state) => state.setScreen);
 
   useEffect(() => {
     void loadDiagnostics();
@@ -34,11 +33,8 @@ export function SettingsView() {
         <div className="settings-title-block">
           <div className="eyebrow">Settings</div>
           <h2>GeminiApp configuration</h2>
-          <p className="settings-intro">Tweak Gemini CLI integration, model defaults, and diagnostics without leaving the workspace.</p>
+          <p className="settings-intro">Tweak Gemini CLI integration and model defaults without leaving the workspace.</p>
         </div>
-        <button className="ghost-button settings-back-button" onClick={() => setScreen("chat")}>
-          Back to chat
-        </button>
       </div>
 
       <div className="settings-grid">
@@ -99,7 +95,7 @@ export function SettingsView() {
               <CustomDropdown
                 className="settings-model-dropdown"
                 options={SANDBOX_MODE_OPTIONS}
-                value={settings?.preferredSandboxMode ?? "auto"}
+                value={settings?.preferredSandboxMode ?? "off"}
                 onChange={(value) => void updateSettings({ preferredSandboxMode: value as "off" | "auto" | "force" })}
                 ariaLabel="Sandbox mode"
               />
@@ -132,9 +128,11 @@ export function SettingsView() {
               <div>{diagnostics?.authState ?? "-"}</div>
             </div>
           </div>
-          <button className="nav-button" onClick={() => void exportLogs()}>
-            Export diagnostics log
-          </button>
+          <div className="settings-actions" style={{ marginTop: "12px" }}>
+            <button className="nav-button" onClick={() => void exportLogs()}>
+              Export diagnostics log
+            </button>
+          </div>
         </section>
       </div>
     </div>

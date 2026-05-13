@@ -31,12 +31,16 @@ const api = {
     open: (chatId: string) => ipcRenderer.invoke("chat:open", chatId) as Promise<ChatSessionPayload | null>,
     delete: (chatId: string) => ipcRenderer.invoke("chat:delete", chatId) as Promise<void>,
     update: (chatId: string, patch: Partial<ChatSession>) => ipcRenderer.invoke("chat:update", { chatId, patch }) as Promise<ChatSession>,
+    search: (query: string, workspaceId?: string) => ipcRenderer.invoke("chat:search", { query, workspaceId }) as Promise<Array<{ chat: ChatSession; message?: Message }>>,
     send: (chatId: string, prompt: string, assumeAuthenticated?: boolean, userMessageId?: string, assistantMessageId?: string) =>
       ipcRenderer.invoke("chat:send", { chatId, prompt, assumeAuthenticated, userMessageId, assistantMessageId }) as Promise<{
         userMessage: Message;
         assistantMessage: Message;
       }>,
-    stop: (chatId: string) => ipcRenderer.invoke("chat:stop", chatId) as Promise<void>
+    stop: (chatId: string) => ipcRenderer.invoke("chat:stop", chatId) as Promise<void>,
+    revertChangeSet: (chatId: string, changeSetId: string, relativePath?: string) =>
+      ipcRenderer.invoke("chat:revertChangeSet", { chatId, changeSetId, relativePath }) as Promise<ChatSessionPayload>,
+    openPath: (filePath: string) => ipcRenderer.invoke("chat:openPath", filePath) as Promise<void>
   },
   cli: {
     getStatus: () => ipcRenderer.invoke("cli:getStatus") as Promise<CliStatus>,

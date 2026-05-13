@@ -33,10 +33,25 @@ type AcpProcessState = {
   cancelRequested: boolean;
   promptInFlight: boolean;
   currentAssistantMessageId?: string;
+  currentAssistantText: string;
+  assistantReplayHistory?: string[];
+  assistantReplayCandidate?: {
+    messageIndex: number;
+    offset: number;
+    confirmed: boolean;
+    pendingText: string;
+  };
+  assistantReplayActive: boolean;
   startTime?: number;
 };
 
+const ASSISTANT_REPLAY_CONFIRM_CHARS = 256;
+const ASSISTANT_REPLAY_MAX_MESSAGES = 8;
+const ASSISTANT_REPLAY_MAX_PENDING_CHARS = 8192;
+
 const ACP_METHODS = {
+  fsReadTextFile: "fs/read_text_file",
+  fsWriteTextFile: "fs/write_text_file",
   initialize: "initialize",
   sessionCancel: "session/cancel",
   sessionLoad: "session/load",
@@ -72,6 +87,10 @@ export class GeminiCliManager {
     return this.cliPath;
   }
 
+  getActiveRunChatId(): string | null {
+    return this.activeProcess?.promptInFlight ? this.activeProcess.chatId : null;
+  }
+
   activateChat(nextChatId: string | null): void {
     if (!this.activeProcess) {
       return;
@@ -81,10 +100,9 @@ export class GeminiCliManager {
       return;
     }
 
-    this.terminateProcess(this.activeProcess, {
-      emitUserVisibleStop: true,
-      detail: nextChatId ? "Generation stopped because you switched chats." : "Generation stopped because the active chat changed."
-    });
+    if (this.activeProcess.promptInFlight) {
+      return;
+    }
   }
 
   private getResolvedCliPath(): string {
@@ -207,6 +225,11 @@ export class GeminiCliManager {
       normalized.includes("oauth") ||
       normalized.includes("unauthorized")
     );
+  }
+
+  private isBenignShellPtyNoise(text: string): boolean {
+    const normalized = text.toLowerCase();
+    return normalized.includes("conpty_console_list_agent.js") && normalized.includes("attachconsole failed");
   }
 
   private hasInstalledCandidate(): boolean {
@@ -333,16 +356,27 @@ export class GeminiCliManager {
       window.webContents.send("cli:event", event);
     }
   }
-private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity["kind"], title: string, body: string, status: CliActivity["status"]): void {
+private emitActivityWithId(
+  chatId: string,
+  activityId: string,
+  kind: CliActivity["kind"],
+  title: string,
+  body: string,
+  status: CliActivity["status"],
+  extra?: Partial<Pick<CliActivity, "tone" | "target" | "reason" | "details" | "toolKind" | "suggestedChatTitle">>
+): void {
+  const messageId = this.activeProcess?.chatId === chatId ? this.activeProcess.currentAssistantMessageId : undefined;
+  const scopedActivityId = messageId && !activityId.includes(messageId) ? `${activityId}_${messageId}` : activityId;
   const activity: CliActivity = {
-    id: activityId,
+    id: scopedActivityId,
     chatId,
-    messageId: this.activeProcess?.chatId === chatId ? this.activeProcess.currentAssistantMessageId : undefined,
+    messageId,
     kind,
     title,
     body,
     status,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    ...extra
   };
 
   this.emit({
@@ -354,8 +388,15 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
   });
 }
 
-  private emitActivity(chatId: string, kind: CliActivity["kind"], title: string, body: string, status: CliActivity["status"]): void {
-    this.emitActivityWithId(chatId, createId("activity"), kind, title, body, status);
+  private emitActivity(
+    chatId: string,
+    kind: CliActivity["kind"],
+    title: string,
+    body: string,
+    status: CliActivity["status"],
+    extra?: Partial<Pick<CliActivity, "tone" | "target" | "reason" | "details" | "toolKind" | "suggestedChatTitle">>
+  ): void {
+    this.emitActivityWithId(chatId, createId("activity"), kind, title, body, status, extra);
   }
 
   private summarizeStructuredPayload(payload: { stats?: unknown; stopReason?: string }): string {
@@ -466,6 +507,10 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     }
 
     const record = content as Record<string, unknown>;
+    if (record.thought === true) {
+      return "";
+    }
+
     const directType = record.type;
     if (directType === "text" && typeof record.text === "string") {
       return record.text;
@@ -473,12 +518,405 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
 
     if (directType === "content" && record.content && typeof record.content === "object") {
       const nested = record.content as Record<string, unknown>;
+      if (nested.thought === true) {
+        return "";
+      }
       if (nested.type === "text" && typeof nested.text === "string") {
         return nested.text;
       }
     }
 
     return "";
+  }
+
+  private advanceAssistantReplayCandidate(
+    history: string[],
+    candidate: NonNullable<AcpProcessState["assistantReplayCandidate"]>,
+    text: string
+  ): { status: "matched" | "mismatch" | "exhausted"; consumed: number } {
+    let consumed = 0;
+    while (consumed < text.length) {
+      while (candidate.messageIndex < history.length && candidate.offset >= history[candidate.messageIndex].length) {
+        candidate.messageIndex += 1;
+        candidate.offset = 0;
+      }
+
+      if (candidate.messageIndex >= history.length) {
+        return { status: "exhausted", consumed };
+      }
+
+      const message = history[candidate.messageIndex];
+      const remainingText = text.slice(consumed);
+      const expected = message.slice(candidate.offset, candidate.offset + remainingText.length);
+
+      if (expected === remainingText || expected.startsWith(remainingText)) {
+        candidate.offset += remainingText.length;
+        return { status: "matched", consumed: text.length };
+      }
+
+      if (remainingText.startsWith(expected) && expected.length > 0) {
+        consumed += expected.length;
+        candidate.offset += expected.length;
+        continue;
+      }
+
+      return { status: "mismatch", consumed };
+    }
+
+    return { status: "matched", consumed };
+  }
+
+  private findAssistantReplayCandidate(history: string[], chunk: string): AcpProcessState["assistantReplayCandidate"] {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const message = history[index];
+      if (!message) {
+        continue;
+      }
+
+      const expected = message.slice(0, chunk.length);
+      if (expected === chunk || expected.startsWith(chunk) || chunk.startsWith(expected)) {
+        return {
+          messageIndex: index,
+          offset: 0,
+          confirmed: false,
+          pendingText: ""
+        };
+      }
+    }
+    return undefined;
+  }
+
+  private stripAssistantReplay(state: AcpProcessState, chunk: string): string {
+    const history = state.assistantReplayHistory;
+    if (!state.assistantReplayActive || !history || history.length === 0 || !chunk) {
+      return chunk;
+    }
+
+    let candidate = state.assistantReplayCandidate;
+    if (!candidate) {
+      candidate = this.findAssistantReplayCandidate(history, chunk);
+      if (!candidate) {
+        state.assistantReplayActive = false;
+        return chunk;
+      }
+      state.assistantReplayCandidate = candidate;
+    }
+
+    const result = this.advanceAssistantReplayCandidate(history, candidate, chunk);
+    const matchedText = chunk.slice(0, result.consumed);
+    if (!candidate.confirmed) {
+      candidate.pendingText += matchedText;
+      if (candidate.pendingText.length >= ASSISTANT_REPLAY_CONFIRM_CHARS) {
+        candidate.confirmed = true;
+        candidate.pendingText = "";
+      } else if (candidate.pendingText.length >= ASSISTANT_REPLAY_MAX_PENDING_CHARS) {
+        state.assistantReplayActive = false;
+        state.assistantReplayCandidate = undefined;
+        const pending = candidate.pendingText;
+        candidate.pendingText = "";
+        return pending + chunk.slice(result.consumed);
+      }
+    }
+
+    if (result.status === "matched") {
+      return "";
+    }
+
+    if (result.status === "exhausted") {
+      state.assistantReplayActive = false;
+      state.assistantReplayCandidate = undefined;
+      // Reaching the end of the replay candidate confirms replay even for short prior answers.
+      candidate.pendingText = "";
+      return chunk.slice(result.consumed);
+    }
+
+    if (result.status === "mismatch") {
+      state.assistantReplayActive = false;
+      state.assistantReplayCandidate = undefined;
+      const pending = candidate.confirmed ? "" : candidate.pendingText;
+      candidate.pendingText = "";
+      return pending + chunk.slice(result.consumed);
+    }
+
+    return "";
+  }
+
+  private getAssistantChunkDelta(state: AcpProcessState, chunk: string): string {
+    let currentChunk = this.stripAssistantReplay(state, chunk);
+    if (!currentChunk) {
+      return "";
+    }
+
+    if (state.currentAssistantText && currentChunk.startsWith(state.currentAssistantText)) {
+      const delta = currentChunk.slice(state.currentAssistantText.length);
+      state.currentAssistantText = currentChunk;
+      return delta;
+    }
+
+    state.currentAssistantText += currentChunk;
+    return currentChunk;
+  }
+
+  private flattenAcpText(value: unknown): string[] {
+    if (typeof value === "string") {
+      return value.trim() ? [value] : [];
+    }
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => this.flattenAcpText(item));
+    }
+    if (!value || typeof value !== "object") {
+      return [];
+    }
+
+    const record = value as Record<string, unknown>;
+    const direct = this.extractTextFromAcpContent(record);
+    const textValues = [direct];
+
+    for (const key of ["text", "summary", "reason", "details", "body", "message"]) {
+      const candidate = record[key];
+      if (typeof candidate === "string") {
+        textValues.push(candidate);
+      }
+    }
+
+    return textValues.map((item) => item.trim()).filter(Boolean);
+  }
+
+  private collectStringValues(value: unknown, keys: string[]): string[] {
+    const found: string[] = [];
+
+    const visit = (candidate: unknown) => {
+      if (!candidate || typeof candidate !== "object") {
+        return;
+      }
+
+      if (Array.isArray(candidate)) {
+        for (const item of candidate) {
+          visit(item);
+        }
+        return;
+      }
+
+      const record = candidate as Record<string, unknown>;
+      for (const key of keys) {
+        const direct = record[key];
+        if (typeof direct === "string" && direct.trim()) {
+          found.push(direct.trim());
+        } else if (Array.isArray(direct)) {
+          for (const item of direct) {
+            if (typeof item === "string" && item.trim()) {
+              found.push(item.trim());
+            }
+          }
+        }
+      }
+
+      for (const nested of Object.values(record)) {
+        if (nested && typeof nested === "object") {
+          visit(nested);
+        }
+      }
+    };
+
+    visit(value);
+    return [...new Set(found)];
+  }
+
+  private looksLikePath(value: string): boolean {
+    return (
+      value.includes("/") ||
+      value.includes("\\") ||
+      /\.(ts|tsx|js|jsx|json|md|txt|css|html|cs|py|java|kt|swift|go|rs|cpp|c|h|hpp|yml|yaml|xml|sh|ps1)$/i.test(value)
+    );
+  }
+
+  private extractTargetFromAcpUpdate(update: Record<string, unknown>): string | undefined {
+    const locationTexts = this.collectStringValues(update.locations, ["path", "uri", "file_path", "dir_path", "url"]);
+    const inputTexts = this.collectStringValues(update.rawInput, ["file_path", "dir_path", "path", "pattern", "url", "command"]);
+    const outputTexts = this.collectStringValues(update.rawOutput, ["file_path", "dir_path", "path", "url", "command"]);
+    const candidates = [...locationTexts, ...inputTexts, ...outputTexts];
+    return candidates.find((candidate) => this.looksLikePath(candidate));
+  }
+
+  private sanitizeReasonText(text: string): string {
+    return text
+      .replace(/\[Thought:\s*true\]/gi, "")
+      .replace(/^\s*\[![^\]]+\]\s*$/gim, "")
+      .trim();
+  }
+
+  private extractTopicSuggestion(update: Record<string, unknown>): string | undefined {
+    const text = [
+      ...this.flattenAcpText(update.content),
+      this.safeStringify(update.rawInput),
+      this.safeStringify(update.rawOutput)
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const directMatch = text.match(/Update topic to:\s*["“”]?(.+?)["“”]?(?:\r?\n|$)/i);
+    if (directMatch?.[1]?.trim()) {
+      return directMatch[1].trim();
+    }
+
+    const match = text.match(/Topic:\s*\*{0,2}(.+?)\*{0,2}(?:\r?\n|$)/i);
+    return match?.[1]?.trim();
+  }
+
+  private extractReasonFromAcpUpdate(update: Record<string, unknown>): string | undefined {
+    const contentTexts = this.flattenAcpText(update.content);
+    const preferred = contentTexts
+      .map((item) => this.sanitizeReasonText(item))
+      .find((item) => item && !/^kind:\s|^status:\s/i.test(item));
+
+    if (preferred) {
+      return preferred;
+    }
+
+    const rawOutputTexts = this.flattenAcpText(update.rawOutput);
+    return rawOutputTexts.map((item) => this.sanitizeReasonText(item)).find(Boolean);
+  }
+
+  private normalizeAcpActivity(update: Record<string, unknown>): {
+    kind: CliActivity["kind"];
+    status: CliActivity["status"];
+    title: string;
+    body: string;
+    tone?: CliActivity["tone"];
+    target?: string;
+    reason?: string;
+    details?: string;
+    toolKind?: string;
+    suggestedChatTitle?: string;
+  } {
+    const toolKind = typeof update.kind === "string" ? update.kind : undefined;
+    const title = typeof update.title === "string" && update.title.trim() ? update.title.trim() : "Tool call";
+    const status = this.mapAcpToolStatus(update.status);
+    const body = this.renderAcpToolBody(update);
+    const target = this.extractTargetFromAcpUpdate(update);
+    const reason = this.extractReasonFromAcpUpdate(update);
+    const suggestedChatTitle = /update topic/i.test(title) || /update topic/i.test(body) ? this.extractTopicSuggestion(update) : undefined;
+
+    if (toolKind === "think") {
+      return {
+        kind: "stdout",
+        status,
+        title: "Thinking",
+        body,
+        tone: "reasoning",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    const normalizedTitle = title.toLowerCase();
+    if (toolKind === "read" || normalizedTitle.includes("readfile") || normalizedTitle.includes("readfolder") || normalizedTitle.includes("readmanyfiles")) {
+      return {
+        kind: "stdout",
+        status,
+        title: normalizedTitle.includes("folder") ? "Reading Folder" : normalizedTitle.includes("many") ? "Reading Files" : "Reading File",
+        body,
+        tone: "read",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    if (toolKind === "search" || normalizedTitle.includes("findfiles") || normalizedTitle.includes("grep") || normalizedTitle.includes("search")) {
+      return {
+        kind: "stdout",
+        status,
+        title: "Searching",
+        body,
+        tone: "search",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    if (toolKind === "fetch") {
+      return {
+        kind: "stdout",
+        status,
+        title: "Fetching Resource",
+        body,
+        tone: "fetch",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    if (toolKind === "execute") {
+      return {
+        kind: "command",
+        status,
+        title: "Running Command",
+        body,
+        tone: "execute",
+        target: target ?? this.collectStringValues(update.rawInput, ["command"]).find(Boolean),
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    if (toolKind === "edit" || normalizedTitle.includes("writefile") || normalizedTitle.startsWith("writing to ")) {
+      const rawOutput = this.safeStringify(update.rawOutput);
+      const writesNewFile = /created and wrote to new file|created new file|successfully created/i.test(rawOutput);
+      return {
+        kind: "command",
+        status,
+        title: normalizedTitle.startsWith("writing to ") ? title : writesNewFile ? "Creating File" : "Writing File",
+        body,
+        tone: toolKind === "edit" ? "edit" : "write",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    if (normalizedTitle.includes("replace")) {
+      return {
+        kind: "command",
+        status,
+        title: "Editing File",
+        body,
+        tone: "edit",
+        target,
+        reason,
+        details: body,
+        toolKind,
+        suggestedChatTitle
+      };
+    }
+
+    return {
+      kind: this.mapAcpToolKind(toolKind),
+      status,
+      title,
+      body,
+      tone: toolKind === "read" ? "read" : toolKind === "search" ? "search" : toolKind === "fetch" ? "fetch" : toolKind === "execute" ? "execute" : "status",
+      target,
+      reason,
+      details: body,
+      toolKind,
+      suggestedChatTitle
+    };
   }
 
   private renderAcpToolBody(update: Record<string, unknown>): string {
@@ -556,7 +994,7 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   }
 
-  private sendRpcResponse(state: AcpProcessState, id: number, result: Record<string, unknown>): void {
+  private sendRpcResponse(state: AcpProcessState, id: number, result: unknown): void {
     state.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
   }
 
@@ -573,10 +1011,108 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       },
       clientCapabilities: {
         auth: { terminal: false },
-        fs: { readTextFile: false, writeTextFile: false },
+        fs: { readTextFile: true, writeTextFile: true },
         terminal: false
       }
     });
+  }
+
+  private resolveWorkspaceFilePath(workspacePath: string, candidatePath: unknown): string {
+    if (typeof candidatePath !== "string" || !candidatePath.trim()) {
+      throw new Error("Missing file path.");
+    }
+
+    const workspaceRoot = path.resolve(workspacePath);
+    const resolvedPath = path.resolve(path.isAbsolute(candidatePath) ? candidatePath : path.join(workspaceRoot, candidatePath));
+    const relativePath = path.relative(workspaceRoot, resolvedPath);
+
+    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+      throw new Error(`Path is outside of the active workspace: ${candidatePath}`);
+    }
+
+    return resolvedPath;
+  }
+
+  private readTextFileSlice(content: string, line?: number, limit?: number): string {
+    if (!line && !limit) {
+      return content;
+    }
+
+    const normalizedLine = Math.max(1, Math.trunc(line ?? 1));
+    const normalizedLimit = limit === undefined ? undefined : Math.max(0, Math.trunc(limit));
+    const lines = content.split(/\r?\n/);
+    const startIndex = Math.min(lines.length, normalizedLine - 1);
+    const endIndex = normalizedLimit === undefined ? lines.length : Math.min(lines.length, startIndex + normalizedLimit);
+    return lines.slice(startIndex, endIndex).join("\n");
+  }
+
+  private async handleAcpReadTextFileRequest(state: AcpProcessState, payload: Record<string, unknown>): Promise<void> {
+    const requestId = typeof payload.id === "number" ? payload.id : undefined;
+    if (requestId === undefined) {
+      return;
+    }
+
+    try {
+      const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
+      const resolvedPath = this.resolveWorkspaceFilePath(state.workspacePath, params.path);
+      const line = typeof params.line === "number" ? params.line : undefined;
+      const limit = typeof params.limit === "number" ? params.limit : undefined;
+      const content = await fs.promises.readFile(resolvedPath, "utf8");
+
+      this.sendRpcResponse(state, requestId, {
+        content: this.readTextFileSlice(content, line, limit)
+      });
+    } catch (error) {
+      this.sendRpcError(state, requestId, -32001, error instanceof Error ? error.message : "Failed to read text file.");
+    }
+  }
+
+  private async handleAcpWriteTextFileRequest(state: AcpProcessState, payload: Record<string, unknown>): Promise<void> {
+    const requestId = typeof payload.id === "number" ? payload.id : undefined;
+    if (requestId === undefined) {
+      return;
+    }
+
+    try {
+      const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
+      const resolvedPath = this.resolveWorkspaceFilePath(state.workspacePath, params.path);
+      const content = typeof params.content === "string" ? params.content : "";
+
+      await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+      await fs.promises.writeFile(resolvedPath, content, "utf8");
+
+      this.sendRpcResponse(state, requestId, null);
+    } catch (error) {
+      this.sendRpcError(state, requestId, -32002, error instanceof Error ? error.message : "Failed to write text file.");
+    }
+  }
+
+  private summarizePermissionRequest(params: Record<string, unknown>): {
+    title: string;
+    body: string;
+    tone: NonNullable<CliActivity["tone"]>;
+    target?: string;
+    reason?: string;
+    details?: string;
+  } {
+    const toolCall = params.toolCall && typeof params.toolCall === "object" ? params.toolCall as Record<string, unknown> : {};
+    const normalized = this.normalizeAcpActivity(toolCall);
+    const optionKinds = Array.isArray(params.options)
+      ? (params.options as Array<Record<string, unknown>>)
+          .map((option) => typeof option.kind === "string" ? option.kind : undefined)
+          .filter((kind): kind is string => Boolean(kind))
+      : [];
+    const permissionSuffix = optionKinds.length > 0 ? `Available options: ${optionKinds.join(", ")}.` : "Awaiting approval policy.";
+    const body = [normalized.reason, permissionSuffix].filter(Boolean).join("\n");
+
+    return {
+      title: `Permission: ${normalized.title}`,
+      body: body || permissionSuffix,
+      tone: normalized.tone ?? "status",
+      target: normalized.target,
+      reason: normalized.reason,
+      details: normalized.details
+    };
   }
 
   private createAcpProcess(chatId: string, workspacePath: string, sandbox: boolean, allowSandboxFallback: boolean): AcpProcessState {
@@ -600,7 +1136,9 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       stopRequested: false,
       cancelRequested: false,
       promptInFlight: false,
-      currentAssistantMessageId: undefined
+      currentAssistantMessageId: undefined,
+      currentAssistantText: "",
+      assistantReplayActive: false
     };
 
     this.emitActivity(chatId, "command", "gemini session", [executable, ...args].join(" "), "running");
@@ -623,6 +1161,9 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     process.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       state.stderrBuffer += text;
+      if (this.isBenignShellPtyNoise(text)) {
+        return;
+      }
       this.emitActivity(chatId, "stderr", "stderr", text, "error");
     });
 
@@ -678,6 +1219,16 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
           return;
         }
 
+        if (payload.method === ACP_METHODS.fsReadTextFile) {
+          void this.handleAcpReadTextFileRequest(state, payload);
+          return;
+        }
+
+        if (payload.method === ACP_METHODS.fsWriteTextFile) {
+          void this.handleAcpWriteTextFileRequest(state, payload);
+          return;
+        }
+
         if (typeof payload.id === "number") {
           this.sendRpcError(state, payload.id, -32601, `Unsupported client method: ${payload.method}`);
         }
@@ -705,15 +1256,30 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
 
   private handleAcpPermissionRequest(state: AcpProcessState, payload: Record<string, unknown>): void {
     const requestId = typeof payload.id === "number" ? payload.id : undefined;
-    if (!requestId) {
+    if (requestId === undefined) {
       return;
     }
 
     const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
     const options = Array.isArray(params.options) ? params.options as Array<Record<string, unknown>> : [];
     const selected = this.selectPermissionOption(options, state.currentModeId);
+    const summary = this.summarizePermissionRequest(params);
+    const activityId = `acp_permission_${requestId}`;
+
+    this.emitActivityWithId(state.chatId, activityId, "status", summary.title, summary.body, "running", {
+      tone: summary.tone,
+      target: summary.target,
+      reason: summary.reason,
+      details: summary.details
+    });
 
     if (!selected) {
+      this.emitActivityWithId(state.chatId, activityId, "status", summary.title, `${summary.body}\nPermission request was cancelled.`, "error", {
+        tone: "error",
+        target: summary.target,
+        reason: summary.reason,
+        details: summary.details
+      });
       this.sendRpcResponse(state, requestId, {
         outcome: {
           outcome: "cancelled"
@@ -722,6 +1288,12 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       return;
     }
 
+    this.emitActivityWithId(state.chatId, activityId, "status", summary.title, `${summary.body}\nSelected: ${selected}.`, "done", {
+      tone: summary.tone,
+      target: summary.target,
+      reason: summary.reason,
+      details: summary.details
+    });
     this.sendRpcResponse(state, requestId, {
       outcome: {
         outcome: "selected",
@@ -760,7 +1332,7 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     const updateType = update.sessionUpdate;
 
     if (updateType === "agent_message_chunk") {
-      const token = this.extractTextFromAcpContent(update.content);
+      const token = this.getAssistantChunkDelta(state, this.extractTextFromAcpContent(update.content));
       if (token) {
         this.status = "streaming";
         this.emit({
@@ -776,14 +1348,22 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
 
     if (updateType === "tool_call" || updateType === "tool_call_update") {
       const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : createId("acp_tool");
-      const title = typeof update.title === "string" && update.title.trim() ? update.title : "Tool call";
+      const normalized = this.normalizeAcpActivity(update);
       this.emitActivityWithId(
         state.chatId,
         `acp_tool_${toolCallId}`,
-        this.mapAcpToolKind(update.kind),
-        title,
-        this.renderAcpToolBody(update),
-        this.mapAcpToolStatus(update.status)
+        normalized.kind,
+        normalized.title,
+        normalized.body,
+        normalized.status,
+        {
+          tone: normalized.tone,
+          target: normalized.target,
+          reason: normalized.reason,
+          details: normalized.details,
+          toolKind: normalized.toolKind,
+          suggestedChatTitle: normalized.suggestedChatTitle
+        }
       );
       return;
     }
@@ -797,7 +1377,29 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       return;
     }
 
-    if (updateType === "usage_update" || updateType === "available_commands_update" || updateType === "config_option_update" || updateType === "plan" || updateType === "user_message_chunk" || updateType === "agent_thought_chunk") {
+    if (updateType === "agent_thought_chunk") {
+      const chunk = this.extractTextFromAcpContent(update.content);
+      if (chunk.trim()) {
+        const activityId = `acp_think_${state.currentAssistantMessageId ?? state.chatId}`;
+        this.emitActivityWithId(
+          state.chatId,
+          activityId,
+          "stdout",
+          "Thinking",
+          chunk.trim(),
+          "running",
+          {
+            tone: "reasoning",
+            reason: chunk.trim(),
+            details: chunk.trim(),
+            toolKind: "think"
+          }
+        );
+      }
+      return;
+    }
+
+    if (updateType === "usage_update" || updateType === "available_commands_update" || updateType === "config_option_update" || updateType === "plan" || updateType === "user_message_chunk") {
       return;
     }
 
@@ -847,7 +1449,13 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
         this.applySessionState(state, sessionId, result);
         return;
       } catch (error) {
-        this.emitActivity(state.chatId, "status", "Session reset", `Failed to load saved session ${sessionId}. Starting a fresh ACP session instead.`, "done");
+        this.emitActivity(
+          state.chatId,
+          "status",
+          "Started new session",
+          `Saved session ${sessionId} could not be loaded, so GeminiApp created a new ACP session for this chat. Previous CLI context may be unavailable.`,
+          "done"
+        );
       }
     }
 
@@ -892,6 +1500,7 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       approvalMode?: ApprovalMode;
       sandbox?: boolean;
       allowSandboxFallback?: boolean;
+      assistantMessageId?: string;
     }
   ): Promise<{ state: AcpProcessState; startedFresh: boolean }> {
     const needsFreshProcess =
@@ -917,6 +1526,7 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     try {
       const state = this.createAcpProcess(chatId, workspacePath, options?.sandbox ?? false, options?.allowSandboxFallback ?? true);
       this.activeProcess = state;
+      state.currentAssistantMessageId = options?.assistantMessageId;
       await this.initializeAcp(state);
       await this.openOrLoadSession(state, options?.sessionId);
       await this.synchronizeSessionSettings(state, options);
@@ -965,6 +1575,7 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       allowSandboxFallback?: boolean;
       assumeAuthenticated?: boolean;
       assistantMessageId?: string;
+      assistantReplayHistory?: string[];
     }
   ): Promise<void> {
     const health = options?.assumeAuthenticated
@@ -1042,6 +1653,10 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
     state.promptInFlight = true;
     state.cancelRequested = false;
     state.currentAssistantMessageId = options?.assistantMessageId;
+    state.currentAssistantText = "";
+    state.assistantReplayHistory = options?.assistantReplayHistory?.slice(-ASSISTANT_REPLAY_MAX_MESSAGES);
+    state.assistantReplayCandidate = undefined;
+    state.assistantReplayActive = Boolean(state.assistantReplayHistory?.length);
     state.startTime = Date.now();
     this.emitActivity(chatId, "status", startedFresh ? "Persistent session ready" : "Using persistent session", `Session ${state.acpSessionId ?? "pending"} in ${path.basename(workspacePath)}`, "done");
 
@@ -1127,6 +1742,10 @@ private emitActivityWithId(chatId: string, activityId: string, kind: CliActivity
       state.promptInFlight = false;
       state.cancelRequested = false;
       state.currentAssistantMessageId = undefined;
+      state.currentAssistantText = "";
+      state.assistantReplayHistory = undefined;
+      state.assistantReplayCandidate = undefined;
+      state.assistantReplayActive = false;
       if (this.status === "busy") {
         this.status = "connected";
       }

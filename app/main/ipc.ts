@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, dialog, ipcMain } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { AppSettings, AuthState, ChatSession, ChatUsageSnapshot, CliHealth, Message, Workspace } from "../shared/types";
 import { GeminiCliManager } from "./cli";
 import { DiagnosticsManager } from "./diagnostics";
@@ -123,6 +123,23 @@ export function registerIpcHandlers(deps: {
     return next;
   };
 
+  const normalizeChatTitle = (value: string): string => {
+    return value
+      .replace(/\*\*/g, "")
+      .replace(/^\s*topic:\s*/i, "")
+      .replace(/^[\p{Extended_Pictographic}\uFE0F\s]+/u, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 96);
+  };
+
+  const getAssistantReplayHistory = (messages: Message[]): string[] | undefined => {
+    const history = messages
+      .filter((message) => message.role === "assistant" && message.content)
+      .map((message) => message.content);
+    return history.length > 0 ? history : undefined;
+  };
+
   cli.subscribe((event) => {
     if (event.type === "assistant_token") {
       store.appendAssistantToken(event.chatId, event.token, event.messageId);
@@ -131,6 +148,20 @@ export function registerIpcHandlers(deps: {
 
     if (event.type === "activity") {
       store.saveActivity(event.activity);
+      store.trackMutationActivity(event.activity);
+      if (event.activity.suggestedChatTitle) {
+        const payload = store.getChatPayload(event.chatId);
+        if (payload) {
+          const nextTitle = normalizeChatTitle(event.activity.suggestedChatTitle);
+          if (nextTitle && nextTitle !== payload.session.title) {
+            store.saveChat({
+              ...payload.session,
+              title: nextTitle,
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
       return;
     }
 
@@ -167,6 +198,8 @@ export function registerIpcHandlers(deps: {
 
     if (event.type === "completed") {
       store.finalizeAssistant(event.chatId, event.messageId, event.durationMs);
+      store.finalizeActivities(event.chatId, event.messageId);
+      store.finalizeChangeSet(event.chatId, event.messageId);
       return;
     }
 
@@ -265,6 +298,10 @@ export function registerIpcHandlers(deps: {
       return;
     }
 
+    if (cli.getActiveRunChatId() === chatId) {
+      cli.stop(chatId);
+    }
+
     const nextWorkspaceId = chatPayload.session.workspaceId;
     store.deleteChat(chatId);
 
@@ -291,7 +328,16 @@ export function registerIpcHandlers(deps: {
     return updatedChat;
   });
 
+  ipcMain.handle("chat:search", (_event, payload: { query: string; workspaceId?: string }) => {
+    return store.searchChats(payload.query, payload.workspaceId);
+  });
+
   ipcMain.handle("chat:send", async (_event, payload: { chatId: string; prompt: string; assumeAuthenticated?: boolean; userMessageId: string; assistantMessageId: string }) => {
+    const activeRunChatId = cli.getActiveRunChatId();
+    if (activeRunChatId) {
+      throw new Error(activeRunChatId === payload.chatId ? "An agent is already running in this chat." : "An agent is already running in another chat. Wait for it to finish before sending a new request.");
+    }
+
     const chatPayload = store.getChatPayload(payload.chatId);
     if (!chatPayload) {
       throw new Error("Chat not found.");
@@ -304,6 +350,7 @@ export function registerIpcHandlers(deps: {
     }
 
     const createdAt = new Date().toISOString();
+    const assistantReplayHistory = getAssistantReplayHistory(chatPayload.messages);
     const userMessage: Message = {
       id: payload.userMessageId,
       chatId: payload.chatId,
@@ -339,7 +386,8 @@ export function registerIpcHandlers(deps: {
       sandbox: chatPayload.session.sandbox && settings.preferredSandboxMode !== "off",
       allowSandboxFallback: settings.preferredSandboxMode !== "force",
       assumeAuthenticated: payload.assumeAuthenticated,
-      assistantMessageId: payload.assistantMessageId
+      assistantMessageId: payload.assistantMessageId,
+      assistantReplayHistory
     });
 
     return { userMessage, assistantMessage };
@@ -347,6 +395,21 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle("chat:stop", (_event, chatId: string) => {
     cli.stop(chatId);
+  });
+
+  ipcMain.handle("chat:revertChangeSet", (_event, payload: { chatId: string; changeSetId: string; relativePath?: string }) => {
+    const nextPayload = store.revertChangeSet(payload.chatId, payload.changeSetId, payload.relativePath);
+    if (!nextPayload) {
+      throw new Error("Chat not found after rollback.");
+    }
+    return nextPayload;
+  });
+
+  ipcMain.handle("chat:openPath", async (_event, filePath: string) => {
+    const result = await shell.openPath(filePath);
+    if (result) {
+      throw new Error(result);
+    }
   });
 
   ipcMain.handle("cli:getStatus", () => cli.getStatus());
@@ -408,6 +471,7 @@ export function registerIpcHandlers(deps: {
       chats,
       activeChat: null,
       cliStatus: cliHealth.status,
+      activeRunChatId: cli.getActiveRunChatId(),
       cliHealth,
       environment: environmentStatus,
       models: runtimeConfig.models

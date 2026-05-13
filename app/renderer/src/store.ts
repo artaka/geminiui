@@ -23,6 +23,7 @@ interface BootstrapPayload {
   chats: ChatSession[];
   activeChat: ChatSessionPayload | null;
   cliStatus: CliStatus;
+  activeRunChatId: string | null;
   cliHealth: CliHealth | null;
   environment: EnvironmentStatus;
   models: RuntimeModelOption[];
@@ -40,11 +41,14 @@ interface AppState {
   activeWorkspace: Workspace | null;
   activeChat: ChatSessionPayload | null;
   cliStatus: CliStatus;
+  activeRunChatId: string | null;
   cliHealth: CliHealth | null;
   environment: EnvironmentStatus | null;
   models: RuntimeModelOption[];
   diagnostics: DiagnosticsSnapshot | null;
-  activeScreen: "chat" | "settings";
+  activeScreen: "chat" | "settings" | "search" | "projects";
+  searchResults: Array<{ chat: ChatSession; message?: Message }>;
+  searchQuery: string;
   bootstrap(): Promise<void>;
   addWorkspace(): Promise<void>;
   selectWorkspace(workspaceId: string): Promise<void>;
@@ -54,6 +58,8 @@ interface AppState {
   updateChat(chatId: string, patch: Partial<ChatSession>): Promise<void>;
   sendPrompt(prompt: string): Promise<void>;
   stopPrompt(): Promise<void>;
+  revertChangeSet(changeSetId: string, relativePath?: string): Promise<void>;
+  openPath(filePath: string): Promise<void>;
   loadDiagnostics(): Promise<void>;
   exportLogs(): Promise<void>;
   updateSettings(patch: Partial<AppSettings>): Promise<void>;
@@ -62,7 +68,8 @@ interface AppState {
   openCliLogin(): Promise<void>;
   installCli(): Promise<void>;
   setupSandbox(): Promise<void>;
-  setScreen(screen: "chat" | "settings"): void;
+  setScreen(screen: "chat" | "settings" | "search" | "projects"): void;
+  search(query: string): Promise<void>;
   applyCliEvent(event: CliEvent): void;
 }
 
@@ -132,11 +139,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeWorkspace: null,
   activeChat: null,
   cliStatus: "stopped",
+  activeRunChatId: null,
   cliHealth: null,
   environment: null,
   models: [],
   diagnostics: null,
   activeScreen: "chat",
+  searchResults: [],
+  searchQuery: "",
 
   async bootstrap() {
     if (get().bootstrapped) {
@@ -161,6 +171,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           chats: payload.chats,
           activeChat: payload.activeChat,
           cliStatus: payload.cliStatus,
+          activeRunChatId: payload.activeRunChatId,
           cliHealth: payload.cliHealth,
           environment: payload.environment,
           models: payload.models
@@ -270,6 +281,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!activeChat) {
       return;
     }
+    const activeRunChatId = get().activeRunChatId;
+    if (activeRunChatId) {
+      set({
+        error: activeRunChatId === activeChat.session.id ? "An agent is already running in this chat." : "An agent is already running in another chat. Wait for it to finish before sending a new request."
+      });
+      return;
+    }
 
     const userMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const assistantMessageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -295,7 +313,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...activeChat,
         messages: [...activeChat.messages, userMessage, assistantMessage]
       },
-      cliStatus: "starting"
+      cliStatus: "starting",
+      activeRunChatId: activeChat.session.id
     });
 
     try {
@@ -318,6 +337,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!state.activeChat || state.activeChat.session.id !== activeChat.session.id) {
           return {
             cliStatus: "error" as const,
+            activeRunChatId: state.activeRunChatId === activeChat.session.id ? null : state.activeRunChatId,
             error: error instanceof Error ? error.message : String(error)
           };
         }
@@ -336,6 +356,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           activeChat: { ...state.activeChat, messages },
           cliStatus: "error" as const,
+          activeRunChatId: state.activeRunChatId === activeChat.session.id ? null : state.activeRunChatId,
           error: error instanceof Error ? error.message : String(error)
         };
       });
@@ -348,6 +369,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     await window.gemini.chat.stop(activeChat.session.id);
+  },
+
+  async revertChangeSet(changeSetId: string, relativePath?: string) {
+    const activeChat = get().activeChat;
+    if (!activeChat) {
+      return;
+    }
+    const nextPayload = await window.gemini.chat.revertChangeSet(activeChat.session.id, changeSetId, relativePath);
+    set({ activeChat: nextPayload });
+  },
+
+  async openPath(filePath: string) {
+    await window.gemini.chat.openPath(filePath);
   },
 
   async loadDiagnostics() {
@@ -434,13 +468,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ activeScreen: screen });
   },
 
+  async search(query) {
+    set({ searchQuery: query, loading: true });
+    try {
+      const results = await window.gemini.chat.search(query);
+      set({ searchResults: results, loading: false });
+    } catch (error) {
+      set({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  },
+
   applyCliEvent(event) {
     try {
       set((state) => {
       const activeChat = state.activeChat;
+      const nextRunChatIdForStatus = event.type === "status"
+        ? event.status === "starting" || event.status === "busy" || event.status === "streaming"
+          ? event.chatId
+          : state.activeRunChatId === event.chatId
+            ? null
+            : state.activeRunChatId
+        : state.activeRunChatId;
       if (!activeChat || activeChat.session.id !== event.chatId) {
         return {
           cliStatus: event.type === "status" ? event.status : state.cliStatus,
+          activeRunChatId:
+            event.type === "assistant_token"
+              ? event.chatId
+              : event.type === "completed" || event.type === "error"
+                ? state.activeRunChatId === event.chatId ? null : state.activeRunChatId
+                : nextRunChatIdForStatus,
           cliHealth: event.type === "status" && state.cliHealth ? { ...state.cliHealth, status: event.status } : state.cliHealth
         };
       }
@@ -468,12 +528,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         );
         return {
           activeChat: { ...activeChat, messages },
-          cliStatus: "streaming"
+          cliStatus: "streaming",
+          activeRunChatId: event.chatId
         };
       }
 
       if (event.type === "activity") {
-        const existingActivityIndex = activeChat.activities.findIndex((activity) => activity.id === event.activity.id);
+        const existingActivityIndex = activeChat.activities.findIndex((activity) => activity.id === event.activity.id && activity.messageId === event.activity.messageId);
         let nextActivities: CliActivity[];
         if (existingActivityIndex >= 0) {
           nextActivities = activeChat.activities.map((activity, index) =>
@@ -487,11 +548,31 @@ export const useAppStore = create<AppState>((set, get) => ({
           nextActivities = nextActivities.slice(-200);
         }
 
+        const nextSession =
+          event.activity.suggestedChatTitle && event.activity.suggestedChatTitle.trim()
+            ? {
+                ...activeChat.session,
+                title: event.activity.suggestedChatTitle
+                  .trim()
+                  .replace(/\*\*/g, "")
+                  .replace(/^\s*topic:\s*/i, "")
+                  .replace(/^[\p{Extended_Pictographic}\uFE0F\s]+/u, "")
+                  .replace(/\s+/g, " ")
+                  .trim()
+                  .slice(0, 96)
+              }
+            : activeChat.session;
+
         return {
           activeChat: {
             ...activeChat,
+            session: nextSession,
             activities: nextActivities
-          }
+          },
+          chats:
+            nextSession === activeChat.session
+              ? state.chats
+              : state.chats.map((chat) => (chat.id === event.chatId ? nextSession : chat))
         };
       }
 
@@ -540,9 +621,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
           return message;
         });
+        const activities = activeChat.activities.map((activity) => {
+          if (activity.tone === "reasoning" && activity.status === "running" && (!fallbackAssistantId || activity.messageId === fallbackAssistantId)) {
+            return { ...activity, status: "done" as const };
+          }
+          return activity;
+        });
         return {
-          activeChat: { ...activeChat, messages },
+          activeChat: { ...activeChat, messages, activities },
           cliStatus: "connected",
+          activeRunChatId: state.activeRunChatId === event.chatId ? null : state.activeRunChatId,
           cliHealth: state.cliHealth ? { ...state.cliHealth, status: "connected" } : state.cliHealth
         };
       }
@@ -583,6 +671,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           activeChat: { ...activeChat, messages, activities: nextActivities },
           cliStatus: "error",
+          activeRunChatId: state.activeRunChatId === event.chatId ? null : state.activeRunChatId,
           cliHealth: state.cliHealth
             ? {
                 ...state.cliHealth,
@@ -598,6 +687,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (event.type === "status") {
         return {
           cliStatus: event.status,
+          activeRunChatId: nextRunChatIdForStatus,
           cliHealth: state.cliHealth ? { ...state.cliHealth, status: event.status } : state.cliHealth
         };
       }

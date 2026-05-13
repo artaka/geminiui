@@ -52,6 +52,9 @@ export interface ChatSession {
 
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "done" | "streaming" | "error";
+export type FileChangeKind = "modified" | "created" | "deleted";
+export type FileChangeState = "active" | "reverted";
+export type FileChangeSetState = "ready" | "partial" | "reverted";
 
 export interface Message {
   id: string;
@@ -61,10 +64,45 @@ export interface Message {
   status: MessageStatus;
   createdAt: string;
   durationMs?: number;
+  changeSetId?: string;
+}
+
+export interface FileChangeEntry {
+  path: string;
+  relativePath: string;
+  kind: FileChangeKind;
+  state: FileChangeState;
+  additions: number;
+  deletions: number;
+  diffPreview: string;
+  revertedAt?: string;
+}
+
+export interface FileChangeSet {
+  id: string;
+  chatId: string;
+  messageId: string;
+  workspacePath: string;
+  createdAt: string;
+  status: FileChangeSetState;
+  totalAdditions: number;
+  totalDeletions: number;
+  fileCount: number;
+  files: FileChangeEntry[];
 }
 
 export type CliActivityKind = "status" | "command" | "stdout" | "stderr" | "error";
 export type CliActivityStatus = "running" | "done" | "error";
+export type CliActivityTone =
+  | "status"
+  | "reasoning"
+  | "read"
+  | "search"
+  | "write"
+  | "edit"
+  | "execute"
+  | "fetch"
+  | "error";
 
 export interface CliActivity {
   id: string;
@@ -75,12 +113,19 @@ export interface CliActivity {
   body: string;
   status: CliActivityStatus;
   createdAt: string;
+  tone?: CliActivityTone;
+  target?: string;
+  reason?: string;
+  details?: string;
+  toolKind?: string;
+  suggestedChatTitle?: string;
 }
 
 export interface ChatSessionPayload {
   session: ChatSession;
   messages: Message[];
   activities: CliActivity[];
+  changeSets: FileChangeSet[];
 }
 
 export interface CliEventBase {
