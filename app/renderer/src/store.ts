@@ -51,6 +51,7 @@ interface AppState {
   searchQuery: string;
   bootstrap(): Promise<void>;
   addWorkspace(): Promise<void>;
+  deleteWorkspace(workspaceId: string): Promise<void>;
   selectWorkspace(workspaceId: string): Promise<void>;
   createChat(): Promise<void>;
   openChat(chatId: string): Promise<void>;
@@ -201,6 +202,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const activeChat = await window.gemini.chat.open(chat.id);
     const chats = await window.gemini.chat.list(workspace.id);
     set({ chats, activeChat });
+  },
+
+  async deleteWorkspace(workspaceId: string) {
+    const result = await window.gemini.projects.delete(workspaceId);
+    const nextActiveWorkspace = result.workspaces.find((workspace) => workspace.id === result.activeWorkspaceId) ?? result.workspaces[0] ?? null;
+    const nextChats = nextActiveWorkspace ? await window.gemini.chat.list(nextActiveWorkspace.id) : [];
+    const nextActiveChat = nextChats[0] ? await window.gemini.chat.open(nextChats[0].id) : null;
+    set({
+      workspaces: result.workspaces,
+      activeWorkspace: nextActiveWorkspace,
+      chats: nextChats,
+      activeChat: nextActiveChat
+    });
   },
 
   async selectWorkspace(workspaceId: string) {

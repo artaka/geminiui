@@ -1,9 +1,9 @@
 {
-  "name": "geminiapp",
-  "version": "0.1.21",
+  "name": "geminiui",
+  "version": "0.1.24",
   "description": "Electron desktop client for Gemini CLI with a Codex-like UX.",
   "main": "dist/main/index.js",
-  "author": "OpenAI Codex",
+  "author": "artaka",
   "license": "MIT",
   "scripts": {
     "dev": "npm run build:main && concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
@@ -14,6 +14,7 @@
     "build:renderer": "vite build --config app/renderer/vite.config.ts",
     "build:main": "tsc -p app/main/tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
@@ -24,20 +25,22 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
-    "@types/node": "^22.10.1",
+    "@types/node": "^22.19.19",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
+    "ts-node": "^10.9.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
+    "vitest": "^4.1.6",
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.geminiapp.desktop",
-    "productName": "GeminiApp",
+    "appId": "com.geminiui.desktop",
+    "productName": "GeminiUI",
     "directories": {
       "output": "release"
     },
@@ -51,6 +54,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "win": {
+      "icon": "icon.ico",
       "target": [
         "nsis"
       ]

@@ -32,8 +32,8 @@ export function registerIpcHandlers(deps: {
     const warningResult = await showMessageBox(parentWindow, {
       type: "warning",
       title: "Gemini CLI not found",
-      message: "GeminiApp could not find Gemini CLI on this computer.",
-      detail: "The app depends on the local Gemini CLI. Install it first, then return to GeminiApp and run the check again.",
+      message: "GeminiUI could not find Gemini CLI on this computer.",
+      detail: "The app depends on the local Gemini CLI. Install it first, then return to GeminiUI and run the check again.",
       buttons: ["Show instructions", "Close"],
       defaultId: 0,
       cancelId: 1,
@@ -47,8 +47,8 @@ export function registerIpcHandlers(deps: {
     const installResult = await showMessageBox(parentWindow, {
       type: "info",
       title: "How to install Gemini CLI",
-      message: "1. Install Node.js if it is missing.\n2. Run: npm install -g @google/gemini-cli\n3. Restart GeminiApp or press Recheck Gemini CLI.\n4. Then sign in through Gemini CLI.",
-      detail: "You can open an installer terminal from the next step. It will run the dependency setup commands for GeminiApp.",
+      message: "1. Install Node.js if it is missing.\n2. Run: npm install -g @google/gemini-cli\n3. Restart GeminiUI or press Recheck Gemini CLI.\n4. Then sign in through Gemini CLI.",
+      detail: "You can open an installer terminal from the next step. It will run the dependency setup commands for GeminiUI.",
       buttons: ["Open installer terminal", "Later"],
       defaultId: 0,
       cancelId: 1,
@@ -248,6 +248,22 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle("projects:setActive", (_event, workspaceId: string) => {
     store.updateSettings({ activeWorkspaceId: workspaceId, activeChatId: undefined });
     cli.activateChat(null);
+  });
+
+  ipcMain.handle("projects:delete", (_event, workspaceId: string) => {
+    if (cli.getActiveRunChatId()) {
+      throw new Error("Cannot delete a workspace while an agent is running.");
+    }
+    store.deleteWorkspace(workspaceId);
+    const settings = store.getSettings();
+    cli.activateChat(null);
+    return {
+      workspaces: store.listWorkspaces().map((workspace) => ({
+        ...workspace,
+        isMissing: !fs.existsSync(workspace.path)
+      })),
+      activeWorkspaceId: settings.activeWorkspaceId
+    };
   });
 
   ipcMain.handle("chat:list", (_event, workspaceId: string) => store.listChats(workspaceId));

@@ -33,7 +33,7 @@ interface RuntimeConfigFile {
 let cachedConfig: RuntimeConfigFile | null = null;
 
 function resolveConfigPath(): string {
-  const baseDir = app.isPackaged ? path.dirname(app.getAppPath()) : app.getAppPath();
+  const baseDir = app.getAppPath();
   return path.join(baseDir, "config", "cli.runtime.json");
 }
 

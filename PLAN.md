@@ -35,3 +35,24 @@ Build an MVP Windows desktop client on Electron that feels close to Codex while 
 - MVP only; search, plugins, automations, and advanced right-side panels stay out of scope.
 - Gemini CLI is the required runtime in v1.
 - Local JSON persistence is acceptable for the first release.
+
+## Roadmap & Status
+
+- [x] Phase 1: Foundation & IPC
+- [x] Phase 2: Shell & Sidebar
+- [x] Phase 3: CLI Session Management
+- [x] Phase 4: Persistence & Projects
+- [x] Phase 5: Rich Markdown & Diffs
+    - [x] Markdown tables support added
+- [x] Phase 6: Quality & Testing
+    - [x] Vitest environment set up
+    - [x] JsonStore unit tests implemented
+- [ ] Phase 7: Polish & Distribution
+
+## Tech Stack
+
+- **Frontend:** React 18, TypeScript, Vite, Zustand.
+- **Styling:** Vanilla CSS (Codex-like theme).
+- **Backend:** Electron 33+, Node.js 22+.
+- **Testing:** Vitest.
+- **Runtime:** Gemini CLI (required).

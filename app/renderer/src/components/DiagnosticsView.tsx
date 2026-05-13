@@ -19,7 +19,7 @@ export function DiagnosticsView() {
         <div className="settings-title-block">
           <div className="eyebrow">Diagnostics</div>
           <h2>System status & logs</h2>
-          <p className="settings-intro">Detailed health information about GeminiApp, Electron runtime, and Gemini CLI integration.</p>
+          <p className="settings-intro">Detailed health information about GeminiUI, Electron runtime, and Gemini CLI integration.</p>
         </div>
         <button className="ghost-button settings-back-button" onClick={() => setScreen("chat")}>
           Back to chat

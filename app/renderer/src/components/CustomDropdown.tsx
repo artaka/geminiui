@@ -66,8 +66,13 @@ export function CustomDropdown(props: CustomDropdownProps) {
               role="option"
               aria-selected={props.value === option.value}
               className={`custom-dropdown-option ${props.value === option.value ? "selected" : ""}`}
-              onClick={() => {
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setOpen(false);
                 props.onChange(option.value);
+              }}
+              onClick={(event) => {
+                event.preventDefault();
                 setOpen(false);
               }}
             >

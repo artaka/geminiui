@@ -23,7 +23,8 @@ const api = {
   projects: {
     list: () => ipcRenderer.invoke("projects:list") as Promise<Workspace[]>,
     add: () => ipcRenderer.invoke("projects:add") as Promise<Workspace | null>,
-    setActive: (workspaceId: string) => ipcRenderer.invoke("projects:setActive", workspaceId) as Promise<void>
+    setActive: (workspaceId: string) => ipcRenderer.invoke("projects:setActive", workspaceId) as Promise<void>,
+    delete: (workspaceId: string) => ipcRenderer.invoke("projects:delete", workspaceId) as Promise<{ workspaces: Workspace[]; activeWorkspaceId?: string }>
   },
   chat: {
     list: (workspaceId: string) => ipcRenderer.invoke("chat:list", workspaceId),

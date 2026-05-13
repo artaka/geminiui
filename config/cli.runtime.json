@@ -35,8 +35,8 @@
       "name": "Ripgrep",
       "required": false,
       "checkCommand": "rg",
-      "installHint": "winget install --id BurntSushi.ripgrep -e",
-      "installScript": "where winget >nul 2>nul && winget install --id BurntSushi.ripgrep -e --accept-source-agreements --accept-package-agreements || echo winget is not available; install ripgrep manually."
+      "installHint": "winget install BurntSushi.ripgrep.MSVC",
+      "installScript": "where winget >nul 2>nul && winget install BurntSushi.ripgrep.MSVC --accept-source-agreements --accept-package-agreements || echo winget is not available; install ripgrep manually."
     },
     {
       "id": "docker",

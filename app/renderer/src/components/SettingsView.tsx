@@ -32,7 +32,7 @@ export function SettingsView() {
       <div className="settings-header">
         <div className="settings-title-block">
           <div className="eyebrow">Settings</div>
-          <h2>GeminiApp configuration</h2>
+          <h2>GeminiUI configuration</h2>
           <p className="settings-intro">Tweak Gemini CLI integration and model defaults without leaving the workspace.</p>
         </div>
       </div>

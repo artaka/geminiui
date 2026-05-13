@@ -13,12 +13,12 @@ export function AuthScreen(props: { error?: string; mode: "install" | "login" })
   return (
     <div className="centered-screen">
       <div className="auth-card">
-        <div className="eyebrow">GeminiApp</div>
+        <div className="eyebrow">GeminiUI</div>
         <h1>{isInstallMode ? "Install Gemini CLI" : "Authorize Gemini CLI"}</h1>
         <p className="auth-copy">
           {isInstallMode
-            ? "GeminiApp works through the local Gemini CLI. The app did not detect a usable CLI yet, so install it first or point settings to the correct executable."
-            : "GeminiApp detected Gemini CLI, but the CLI is not ready for requests yet. Complete login in Gemini itself, then return here and recheck."}
+            ? "GeminiUI works through the local Gemini CLI. The app did not detect a usable CLI yet, so install it first or point settings to the correct executable."
+            : "GeminiUI detected Gemini CLI, but the CLI is not ready for requests yet. Complete login in Gemini itself, then return here and recheck."}
         </p>
         <div className="onboarding-steps">
           {isInstallMode ? (

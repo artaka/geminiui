@@ -4,64 +4,28 @@ import os from "node:os";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { ApprovalMode, CliActivity, CliEvent, CliHealth, CliStatus } from "../shared/types";
+import {
+  ASSISTANT_REPLAY_CONFIRM_CHARS,
+  ASSISTANT_REPLAY_MAX_MESSAGES,
+  ASSISTANT_REPLAY_MAX_PENDING_CHARS,
+  getAssistantChunkDelta
+} from "./cli/assistant-replay";
+import {
+  normalizeAcpActivity,
+} from "./cli/activity-parser";
+import { ACP_METHODS, AcpPendingRequest, AcpProcessState } from "./cli/types";
+import {
+  extractTextFromAcpContent,
+  parseRpcError,
+  readTextFileSlice,
+  resolveWorkspaceFilePath,
+  safeStringify
+} from "./cli/utils";
 import { getRuntimeConfig } from "./runtime-config";
 
 function createId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
-
-type AcpPendingRequest = {
-  method: string;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
-
-type AcpProcessState = {
-  chatId: string;
-  workspacePath: string;
-  process: ChildProcessWithoutNullStreams;
-  stdoutBuffer: string;
-  stderrBuffer: string;
-  nextRequestId: number;
-  pendingRequests: Map<number, AcpPendingRequest>;
-  acpSessionId?: string;
-  currentModelId?: string;
-  currentModeId?: string;
-  sandboxEnabled: boolean;
-  allowSandboxFallback: boolean;
-  stopRequested: boolean;
-  cancelRequested: boolean;
-  promptInFlight: boolean;
-  currentAssistantMessageId?: string;
-  currentAssistantText: string;
-  assistantReplayHistory?: string[];
-  assistantReplayCandidate?: {
-    messageIndex: number;
-    offset: number;
-    confirmed: boolean;
-    pendingText: string;
-  };
-  assistantReplayActive: boolean;
-  startTime?: number;
-};
-
-const ASSISTANT_REPLAY_CONFIRM_CHARS = 256;
-const ASSISTANT_REPLAY_MAX_MESSAGES = 8;
-const ASSISTANT_REPLAY_MAX_PENDING_CHARS = 8192;
-
-const ACP_METHODS = {
-  fsReadTextFile: "fs/read_text_file",
-  fsWriteTextFile: "fs/write_text_file",
-  initialize: "initialize",
-  sessionCancel: "session/cancel",
-  sessionLoad: "session/load",
-  sessionNew: "session/new",
-  sessionPrompt: "session/prompt",
-  sessionRequestPermission: "session/request_permission",
-  sessionSetMode: "session/set_mode",
-  sessionSetModel: "session/set_model",
-  sessionUpdate: "session/update"
-} as const;
 
 export class GeminiCliManager {
   private status: CliStatus = "stopped";
@@ -1054,13 +1018,13 @@ private emitActivityWithId(
 
     try {
       const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
-      const resolvedPath = this.resolveWorkspaceFilePath(state.workspacePath, params.path);
+      const resolvedPath = resolveWorkspaceFilePath(state.workspacePath, params.path);
       const line = typeof params.line === "number" ? params.line : undefined;
       const limit = typeof params.limit === "number" ? params.limit : undefined;
       const content = await fs.promises.readFile(resolvedPath, "utf8");
 
       this.sendRpcResponse(state, requestId, {
-        content: this.readTextFileSlice(content, line, limit)
+        content: readTextFileSlice(content, line, limit)
       });
     } catch (error) {
       this.sendRpcError(state, requestId, -32001, error instanceof Error ? error.message : "Failed to read text file.");
@@ -1075,7 +1039,7 @@ private emitActivityWithId(
 
     try {
       const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : {};
-      const resolvedPath = this.resolveWorkspaceFilePath(state.workspacePath, params.path);
+      const resolvedPath = resolveWorkspaceFilePath(state.workspacePath, params.path);
       const content = typeof params.content === "string" ? params.content : "";
 
       await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
@@ -1096,7 +1060,7 @@ private emitActivityWithId(
     details?: string;
   } {
     const toolCall = params.toolCall && typeof params.toolCall === "object" ? params.toolCall as Record<string, unknown> : {};
-    const normalized = this.normalizeAcpActivity(toolCall);
+    const normalized = normalizeAcpActivity(toolCall);
     const optionKinds = Array.isArray(params.options)
       ? (params.options as Array<Record<string, unknown>>)
           .map((option) => typeof option.kind === "string" ? option.kind : undefined)
@@ -1138,7 +1102,8 @@ private emitActivityWithId(
       promptInFlight: false,
       currentAssistantMessageId: undefined,
       currentAssistantText: "",
-      assistantReplayActive: false
+      assistantReplayActive: false,
+      reasoningSequence: 0
     };
 
     this.emitActivity(chatId, "command", "gemini session", [executable, ...args].join(" "), "running");
@@ -1243,7 +1208,7 @@ private emitActivityWithId(
         state.pendingRequests.delete(payload.id);
 
         if (payload.error) {
-          pending.reject(this.parseRpcError(payload.error, `${pending.method} failed.`));
+          pending.reject(parseRpcError(payload.error, `${pending.method} failed.`));
           return;
         }
 
@@ -1332,7 +1297,7 @@ private emitActivityWithId(
     const updateType = update.sessionUpdate;
 
     if (updateType === "agent_message_chunk") {
-      const token = this.getAssistantChunkDelta(state, this.extractTextFromAcpContent(update.content));
+      const token = getAssistantChunkDelta(state, extractTextFromAcpContent(update.content));
       if (token) {
         this.status = "streaming";
         this.emit({
@@ -1348,7 +1313,7 @@ private emitActivityWithId(
 
     if (updateType === "tool_call" || updateType === "tool_call_update") {
       const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : createId("acp_tool");
-      const normalized = this.normalizeAcpActivity(update);
+      const normalized = normalizeAcpActivity(update);
       this.emitActivityWithId(
         state.chatId,
         `acp_tool_${toolCallId}`,
@@ -1378,20 +1343,39 @@ private emitActivityWithId(
     }
 
     if (updateType === "agent_thought_chunk") {
-      const chunk = this.extractTextFromAcpContent(update.content);
+      const chunk = extractTextFromAcpContent(update.content);
       if (chunk.trim()) {
-        const activityId = `acp_think_${state.currentAssistantMessageId ?? state.chatId}`;
+        if (state.lastReasoningActivityId) {
+          this.emitActivityWithId(
+            state.chatId,
+            state.lastReasoningActivityId,
+            "stdout",
+            "Thinking",
+            state.lastReasoningChunk ?? "",
+            "done",
+            {
+              tone: "reasoning",
+              reason: state.lastReasoningChunk ?? "",
+              details: state.lastReasoningChunk ?? "",
+              toolKind: "think"
+            }
+          );
+        }
+        const nextChunk = chunk.trim();
+        const activityId = `acp_think_${state.currentAssistantMessageId ?? state.chatId}_${state.reasoningSequence++}`;
+        state.lastReasoningActivityId = activityId;
+        state.lastReasoningChunk = nextChunk;
         this.emitActivityWithId(
           state.chatId,
           activityId,
           "stdout",
           "Thinking",
-          chunk.trim(),
+          nextChunk,
           "running",
           {
             tone: "reasoning",
-            reason: chunk.trim(),
-            details: chunk.trim(),
+            reason: nextChunk,
+            details: nextChunk,
             toolKind: "think"
           }
         );
@@ -1403,7 +1387,7 @@ private emitActivityWithId(
       return;
     }
 
-    this.emitActivity(state.chatId, "stdout", "ACP update", this.safeStringify(update), "done");
+    this.emitActivity(state.chatId, "stdout", "ACP update", safeStringify(update), "done");
   }
 
   private applySessionState(state: AcpProcessState, sessionId: string, result: unknown): void {
@@ -1453,7 +1437,7 @@ private emitActivityWithId(
           state.chatId,
           "status",
           "Started new session",
-          `Saved session ${sessionId} could not be loaded, so GeminiApp created a new ACP session for this chat. Previous CLI context may be unavailable.`,
+          `Saved session ${sessionId} could not be loaded, so GeminiUI created a new ACP session for this chat. Previous CLI context may be unavailable.`,
           "done"
         );
       }
@@ -1741,6 +1725,9 @@ private emitActivityWithId(
     } finally {
       state.promptInFlight = false;
       state.cancelRequested = false;
+      state.lastReasoningActivityId = undefined;
+      state.lastReasoningChunk = undefined;
+      state.reasoningSequence = 0;
       state.currentAssistantMessageId = undefined;
       state.currentAssistantText = "";
       state.assistantReplayHistory = undefined;

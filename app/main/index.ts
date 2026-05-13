@@ -37,7 +37,6 @@ async function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-    mainWindow.webContents.openDevTools({mode:'detach'});
 
   const rendererUrl = process.env.VITE_DEV_SERVER_URL ?? (!app.isPackaged ? "http://localhost:5173" : undefined);
   if (rendererUrl) {

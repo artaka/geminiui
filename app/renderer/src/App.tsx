@@ -54,7 +54,7 @@ export function App() {
   }, []);
 
   if (loading && !bootstrapped) {
-    return <LoadingScreen label="Booting GeminiApp and checking Gemini CLI..." />;
+    return <LoadingScreen label="Booting GeminiUI" />;
   }
 
   if (cliHealth && !cliHealth.installed) {

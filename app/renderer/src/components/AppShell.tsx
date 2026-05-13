@@ -37,7 +37,7 @@ export function SidebarIcon(props: { name: "toggle" | "new" | "search" | "projec
     case "tools":
       return (
         <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M12.2 3.8a3.2 3.2 0 002.9 4.4l-7.6 7.6a1.4 1.4 0 11-2-2l7.6-7.6a3.2 3.2 0 01-.9-2.3 3.2 3.2 0 01.3-1.4l1.8 1.8 1.8-1.8-1.8-1.8c.4-.2.9-.3 1.4-.3a3.2 3.2 0 012.5 5.2" />
+          <path d="M 16.2 8.205 C 14.947 10.071 12.816 9.789 12.798 9.81 L 5.198 17.41 C 4.428 18.18 3.114 17.828 2.832 16.776 C 2.701 16.288 2.841 15.768 3.198 15.41 L 10.798 7.81 C 10.202 7.195 9.766 5.943 9.786 5.086 C 9.779 4.603 9.993 4.548 10.198 4.11 L 11.998 5.91 L 13.798 4.11 L 11.998 2.31 C 12.398 2.11 12.898 2.01 13.398 2.01 C 15.861 2.009 18.027 5.279 16.796 7.413 C 16.796 7.413 16.805 7.417 16.805 7.417 C 16.724 7.557 16.91 7.283 16.809 7.409" />
         </svg>
       );
     case "automations":
@@ -50,14 +50,29 @@ export function SidebarIcon(props: { name: "toggle" | "new" | "search" | "projec
     case "workspace":
       return (
         <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M3.5 6.5h5l1.5 2h6.5v6.5a1 1 0 01-1 1h-11a1 1 0 01-1-1v-8.5a1 1 0 011-1z" />
+            <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4.884 8.375c0-.904 0-1.356.176-1.701.155-.305.403-.552.706-.706.346-.176.798-.176 1.702-.176h2.805c.395 0 .592 0 .778.044.165.04.323.105.467.193.163.1.303.24.581.519l.102.101c.279.28.419.419.582.519.145.089.302.154.467.193.185.046.382.046.778.046h2.805c.904 0 1.356 0 1.701.176.304.154.551.401.706.705.176.346.176.798.176 1.702v4.521c0 .904 0 1.356-.176 1.702a1.62 1.62 0 0 1-.706.705c-.345.176-.797.176-1.701.176H7.468c-.904 0-1.356 0-1.702-.176a1.625 1.625 0 0 1-.706-.705c-.176-.346-.176-.798-.176-1.702V8.375Z"
+                transform="matrix(1.14617 0 0 1.14617 -3.953 -3.025)"
+            />
         </svg>
       );
     case "settings":
       return (
         <svg viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="10" cy="10" r="2.75" />
-          <path d="M10 3.5v2M10 14.5v2M3.5 10h2M14.5 10h2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M14.6 5.4l-1.4 1.4M6.8 13.2l-1.4 1.4" />
+            <g transform="matrix(.15465 0 0 .12412 -30.225 -23.564)">
+                <path
+                    d="M261.538 250.025c-12.049-1.441-20.868 13.45-15.874 26.803 4.994 13.354 20.055 15.155 27.111 3.242 2.224-3.758 3.245-8.366 2.87-12.967-.749-9.029-6.648-16.171-14.107-17.078Zm37.872 18.95a55.229 55.229 0 0 1-.377 6.184l11.111 10.551c.999 1.002 1.254 2.732.603 4.091l-10.512 22.017c-.659 1.345-2.022 1.921-3.229 1.365l-11.035-5.379c-1.236-.596-2.636-.4-3.728.521a39.475 39.475 0 0 1-5.293 3.731c-1.175.692-1.989 2.046-2.168 3.611l-1.654 14.25c-.224 1.551-1.324 2.694-2.625 2.728h-21.022c-1.278-.027-2.37-1.124-2.627-2.64l-1.652-14.227c-.188-1.584-1.018-2.948-2.211-3.636a37.381 37.381 0 0 1-5.274-3.739c-1.088-.917-2.484-1.108-3.714-.51l-11.032 5.377c-1.207.556-2.569-.019-3.229-1.363l-10.511-22.016c-.653-1.359-.398-3.09.602-4.092l9.39-8.925c1.045-1.005 1.601-2.581 1.475-4.189a51.96 51.96 0 0 1-.143-3.72c0-1.24.052-2.46.143-3.674.111-1.598-.449-3.158-1.492-4.148l-9.385-8.925c-.983-1.007-1.229-2.722-.583-4.071l10.511-22.016c.659-1.346 3.033-2.836 4.241-2.28l10.023 6.293c1.236.596 2.636.401 3.728-.52a39.475 39.475 0 0 1 5.293-3.731c1.176-.691 1.989-2.045 2.168-3.612l1.654-14.248c.224-1.553 1.324-2.695 2.625-2.729h21.022c1.278.027 2.37 1.123 2.627 2.639l1.652 14.228c.188 1.584 1.019 2.948 2.212 3.635a37.282 37.282 0 0 1 5.273 3.741c1.089.916 2.485 1.108 3.714.508l11.032-5.376c1.207-.556 2.569.019 3.229 1.363l10.511 22.017c.653 1.357.399 3.089-.602 4.091l-9.39 8.925c-1.05 1.001-1.61 2.578-1.487 4.189.081 1.232.136 2.469.136 3.711Z"
+                    style={{
+                        fill: "none",
+                        strokeLinecap: "round",
+                        strokeLinejoin: "round",
+                        strokeWidth: 10,
+                    }}
+                />
+            </g>
         </svg>
       );
     case "login":
@@ -147,7 +162,6 @@ export function AppShell() {
   const activeRunChatId = useAppStore((state) => state.activeRunChatId);
   const cliStatus = useAppStore((state) => state.cliStatus);
   const addWorkspace = useAppStore((state) => state.addWorkspace);
-  const selectWorkspace = useAppStore((state) => state.selectWorkspace);
   const openChat = useAppStore((state) => state.openChat);
   const deleteChat = useAppStore((state) => state.deleteChat);
   const createChat = useAppStore((state) => state.createChat);
@@ -157,6 +171,8 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [deleteCandidate, setDeleteCandidate] = useState<ChatSession | null>(null);
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set());
+  const [workspaceChats, setWorkspaceChats] = useState<Record<string, ChatSession[]>>({});
 
   const headerPath = activeWorkspace?.path ?? "No workspace selected";
   const handleOpenChat = (chatId: string) => {
@@ -164,10 +180,37 @@ export function AppShell() {
     void openChat(chatId);
   };
 
+  const toggleWorkspace = (workspaceId: string) => {
+    setExpandedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(workspaceId)) {
+        next.delete(workspaceId);
+      } else {
+        next.add(workspaceId);
+        void window.gemini.chat.list(workspaceId).then((loadedChats) => {
+          setWorkspaceChats((items) => ({ ...items, [workspaceId]: loadedChats }));
+        });
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      return;
+    }
+    setExpandedWorkspaces((current) => {
+      const next = new Set(current);
+      next.add(activeWorkspace.id);
+      return next;
+    });
+    setWorkspaceChats((current) => ({ ...current, [activeWorkspace.id]: chats }));
+  }, [activeWorkspace?.id, chats]);
 
   useEffect(() => {
     let mounted = true;
@@ -261,10 +304,15 @@ export function AppShell() {
                 <div className="workspace-tree">
                   {workspaces.map((workspace) => {
                     const isActiveWorkspace = activeWorkspace?.id === workspace.id;
+                    const isExpanded = expandedWorkspaces.has(workspace.id);
+                    const visibleChats = isActiveWorkspace ? chats : workspaceChats[workspace.id] ?? [];
                     return (
-                      <div key={workspace.id} className={`workspace-group ${isActiveWorkspace ? "active" : ""}`}>
-                        <button className={`workspace-card ${isActiveWorkspace ? "active" : ""}`} onClick={() => void selectWorkspace(workspace.id)} title={workspace.path}>
+                      <div key={workspace.id} className={`workspace-group ${isActiveWorkspace ? "active" : ""} ${isExpanded ? "expanded" : ""}`}>
+                        <button className={`workspace-card ${isActiveWorkspace ? "active" : ""}`} onClick={() => toggleWorkspace(workspace.id)} title={workspace.path} aria-expanded={isExpanded}>
                           <div className="workspace-title-row">
+                            <span className={`workspace-expand-icon ${isExpanded ? "expanded" : ""}`}>
+                              <SidebarIcon name="toggle" />
+                            </span>
                             <span className="workspace-folder-icon">
                               <SidebarIcon name="workspace" />
                             </span>
@@ -273,28 +321,26 @@ export function AppShell() {
                           </div>
                         </button>
 
-                        {isActiveWorkspace ? (
-                          <div className="chat-tree">
-                            {chats.map((chat) => (
-                              <div key={chat.id} className={`chat-row ${activeChat?.session.id === chat.id ? "active" : ""}`}>
-                                <button className={`chat-list-item chat-tree-item ${activeChat?.session.id === chat.id ? "active" : ""}`} onClick={() => handleOpenChat(chat.id)} title={chat.title}>
-                                  <span className="chat-list-title">{chat.title}</span>
-                                  {activeRunChatId === chat.id ? <span className="chat-running-spinner" aria-label="Agent running" /> : <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>}
-                                </button>
-                                <button
-                                  className="chat-delete-button"
-                                  type="button"
-                                  title="Delete chat"
-                                  aria-label={`Delete chat ${chat.title}`}
-                                  onClick={() => setDeleteCandidate(chat)}
-                                >
-                                  <SidebarIcon name="close" />
-                                </button>
-                              </div>
-                            ))}
-                            {chats.length === 0 ? <div className="empty-sidebar-text">No chats yet in this workspace.</div> : null}
-                          </div>
-                        ) : null}
+                        <div className={`chat-tree ${isExpanded ? "expanded" : "collapsed"}`} aria-hidden={!isExpanded}>
+                          {visibleChats.map((chat) => (
+                            <div key={chat.id} className={`chat-row ${activeChat?.session.id === chat.id ? "active" : ""}`}>
+                              <button className={`chat-list-item chat-tree-item ${activeChat?.session.id === chat.id ? "active" : ""}`} onClick={() => handleOpenChat(chat.id)} title={chat.title}>
+                                <span className="chat-list-title">{chat.title}</span>
+                                {activeRunChatId === chat.id ? <span className="chat-running-spinner" aria-label="Agent running" /> : <span className="chat-list-time muted-text">{formatRelativeTime(chat.updatedAt, now)}</span>}
+                              </button>
+                              <button
+                                className="chat-delete-button"
+                                type="button"
+                                title="Delete chat"
+                                aria-label={`Delete chat ${chat.title}`}
+                                onClick={() => setDeleteCandidate(chat)}
+                              >
+                                <SidebarIcon name="close" />
+                              </button>
+                            </div>
+                          ))}
+                          {visibleChats.length === 0 ? <div className="empty-sidebar-text">No chats yet in this workspace.</div> : null}
+                        </div>
                       </div>
                     );
                   })}

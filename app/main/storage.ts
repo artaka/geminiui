@@ -672,6 +672,20 @@ export class JsonStore {
     return workspace;
   }
 
+  deleteWorkspace(workspaceId: string): void {
+    const chatIds = this.metadata.chats.filter((item) => item.workspaceId === workspaceId).map((item) => item.id);
+    for (const chatId of chatIds) {
+      this.deleteChat(chatId);
+    }
+
+    this.metadata.workspaces = this.metadata.workspaces.filter((item) => item.id !== workspaceId);
+    if (this.metadata.settings.activeWorkspaceId === workspaceId) {
+      this.metadata.settings.activeWorkspaceId = this.metadata.workspaces[0]?.id;
+      this.metadata.settings.activeChatId = undefined;
+    }
+    this.scheduleMetadataSave();
+  }
+
   listChats(workspaceId: string): ChatSession[] {
     return this.metadata.chats
       .filter((item) => item.workspaceId === workspaceId)
