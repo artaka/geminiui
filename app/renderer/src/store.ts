@@ -12,6 +12,7 @@ import {
   Message,
   PendingAttachment,
   RuntimeModelOption,
+  UpdateState,
   UserSession,
   Workspace
 } from "@shared/types";
@@ -28,6 +29,7 @@ interface BootstrapPayload {
   cliHealth: CliHealth | null;
   environment: EnvironmentStatus;
   models: RuntimeModelOption[];
+  diagnostics: DiagnosticsSnapshot;
 }
 
 interface AppState {
@@ -50,6 +52,7 @@ interface AppState {
   activeScreen: "chat" | "settings" | "search" | "projects";
   searchResults: Array<{ chat: ChatSession; message?: Message }>;
   searchQuery: string;
+  updateState: UpdateState;
   bootstrap(): Promise<void>;
   addWorkspace(): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
@@ -74,6 +77,8 @@ interface AppState {
   search(query: string): Promise<void>;
   suggestFiles(query: string): Promise<string[]>;
   applyCliEvent(event: CliEvent): void;
+  checkForUpdates(): Promise<void>;
+  quitAndInstall(): Promise<void>;
 }
 
 let bootstrapPromise: Promise<void> | null = null;
@@ -150,6 +155,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "chat",
   searchResults: [],
   searchQuery: "",
+  updateState: { status: "idle" },
 
   async bootstrap() {
     if (get().bootstrapped) {
@@ -177,8 +183,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeRunChatId: payload.activeRunChatId,
           cliHealth: payload.cliHealth,
           environment: payload.environment,
-          models: payload.models
+          models: payload.models,
+          diagnostics: payload.diagnostics
         });
+
+        // Initialize updater state and listener
+        try {
+          const initialUpdateState = await window.gemini.updater.getStatus();
+          set({ updateState: initialUpdateState });
+
+          window.gemini.updater.onStateChanged((state) => {
+            set({ updateState: state });
+          });
+        } catch (err) {
+          console.error("Failed to initialize updater:", err);
+        }
 
         if (payload.settings.activeChatId) {
           void get().openChat(payload.settings.activeChatId);
@@ -515,6 +534,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error("Failed to suggest files:", error);
       return [];
     }
+  },
+
+  async checkForUpdates() {
+    await window.gemini.updater.checkForUpdates();
+  },
+
+  async quitAndInstall() {
+    await window.gemini.updater.quitAndInstall();
   },
 
   applyCliEvent(event) {

@@ -172,6 +172,7 @@ export interface AppSettings {
   preferredApprovalMode: ApprovalMode;
   preferredSandbox: boolean;
   preferredSandboxMode: SandboxMode;
+  debugForceUpdateBanner?: boolean;
   manualAuthConfirmed?: boolean;
   missingCliOnboardingShown?: boolean;
   activeWorkspaceId?: string;
@@ -221,4 +222,28 @@ export interface EnvironmentDependencyStatus {
 
 export interface EnvironmentStatus {
   dependencies: EnvironmentDependencyStatus[];
+}
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface UpdateProgress {
+  total: number;
+  delta: number;
+  transferred: number;
+  percent: number;
+  bytesPerSecond: number;
+}
+
+export interface UpdateState {
+  status: UpdateStatus;
+  version?: string;
+  progress?: UpdateProgress;
+  error?: string;
 }

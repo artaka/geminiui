@@ -1,14 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store";
-
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true" width="20" height="20">
-      <circle cx="8.5" cy="8.5" r="4.5" />
-      <path d="M12 12l4 4" />
-    </svg>
-  );
-}
+import { ActionIcon } from "./chat/Glyphs";
 
 function ChatIcon() {
   return (
@@ -41,7 +33,7 @@ export function SearchView() {
       <div className="search-container">
         <div className="search-input-wrap">
           <div className="search-input-icon">
-            <SearchIcon />
+            <ActionIcon name="search" />
           </div>
           <input
             ref={inputRef}

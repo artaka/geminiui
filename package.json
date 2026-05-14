@@ -1,6 +1,6 @@
 {
   "name": "geminiui",
-  "version": "0.1.27",
+  "version": "0.2.5",
   "description": "Electron desktop client for Gemini CLI with a Codex-like UX.",
   "main": "dist/main/index.js",
   "author": "artaka",
@@ -15,10 +15,12 @@
     "build:main": "tsc -p app/main/tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder --win",
+    "release": "dotenv -- npm run build && dotenv -- electron-builder --win -p always"
   },
   "dependencies": {
     "@fontsource/fira-mono": "^5.2.7",
+    "electron-updater": "^6.8.3",
     "highlight.js": "^11.11.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
+    "dotenv-cli": "^11.0.0",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
     "ts-node": "^10.9.2",
@@ -41,6 +44,13 @@
   "build": {
     "appId": "com.geminiui.desktop",
     "productName": "GeminiUI",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "artaka",
+        "repo": "geminiui"
+      }
+    ],
     "directories": {
       "output": "release"
     },

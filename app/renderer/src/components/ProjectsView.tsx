@@ -1,5 +1,5 @@
 import { useAppStore } from "../store";
-import { SidebarIcon } from "./AppShell";
+import { ActionIcon } from "./chat/Glyphs";
 
 export function ProjectsView() {
   const workspaces = useAppStore((state) => state.workspaces);
@@ -34,13 +34,13 @@ export function ProjectsView() {
               <div className="project-card-header">
                 <div className="project-card-title">
                   <div className="workspace-folder-icon">
-                    <SidebarIcon name="workspace" />
+                    <ActionIcon name="workspace" />
                   </div>
                   <h3>{workspace.name}</h3>
                   {workspace.isMissing ? <span className="warning-badge">Missing</span> : null}
                 </div>
                 <button className="icon-link-button project-delete-button" onClick={() => void deleteWorkspace(workspace.id)} title="Delete workspace" aria-label={`Delete workspace ${workspace.name}`}>
-                  <SidebarIcon name="close" />
+                  <ActionIcon name="close" />
                 </button>
               </div>
               <p className="muted-text" style={{ wordBreak: "break-all" }}>{workspace.path}</p>

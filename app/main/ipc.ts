@@ -6,6 +6,7 @@ import { AppSettings, AuthState, ChatSession, ChatUsageSnapshot, CliHealth, Mess
 import { GeminiCliManager } from "./cli";
 import { DiagnosticsManager } from "./diagnostics";
 import { EnvironmentManager } from "./environment";
+import { UpdateManager } from "./updater";
 import { RuntimeConfigFile } from "./runtime-config";
 import { JsonStore } from "./storage";
 
@@ -19,8 +20,9 @@ export function registerIpcHandlers(deps: {
   diagnostics: DiagnosticsManager;
   environment: EnvironmentManager;
   runtimeConfig: RuntimeConfigFile;
+  updater: UpdateManager;
 }) {
-  const { store, cli, diagnostics, environment, runtimeConfig } = deps;
+  const { store, cli, diagnostics, environment, runtimeConfig, updater } = deps;
 
   const showMessageBox = async (parentWindow: BrowserWindow | null | undefined, options: Electron.MessageBoxOptions) => {
     if (parentWindow) {
@@ -622,6 +624,12 @@ export function registerIpcHandlers(deps: {
     const chats = activeWorkspace ? store.listChats(activeWorkspace.id) : [];
     const cliHealth = await cli.checkHealth();
     const environmentStatus = await environment.getStatus();
+    const diagnosticsSnapshot = diagnostics.getSnapshot(
+      cliHealth.status,
+      settings.cliPath,
+      deriveAuthState(cliHealth, settings.manualAuthConfirmed),
+      activeWorkspace ?? undefined
+    );
 
     if (!cliHealth.installed && !settings.missingCliOnboardingShown) {
       const parentWindow = BrowserWindow.fromWebContents(event.sender);
@@ -641,7 +649,8 @@ export function registerIpcHandlers(deps: {
       activeRunChatId: cli.getActiveRunChatId(),
       cliHealth,
       environment: environmentStatus,
-      models: runtimeConfig.models
+      models: runtimeConfig.models,
+      diagnostics: diagnosticsSnapshot
     };
   });
 
@@ -669,4 +678,8 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle("window:close", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
+
+  ipcMain.handle("updater:getStatus", () => updater.getState());
+  ipcMain.handle("updater:checkForUpdates", () => updater.checkForUpdates());
+  ipcMain.handle("updater:quitAndInstall", () => updater.quitAndInstall());
 }

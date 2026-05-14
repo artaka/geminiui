@@ -91,7 +91,8 @@ function createDefaultSettings(): AppSettings {
     preferredModel: runtimeConfig.models[0]?.id ?? "auto",
     preferredApprovalMode: "default",
     preferredSandbox: false,
-    preferredSandboxMode: "off"
+    preferredSandboxMode: "off",
+    debugForceUpdateBanner: false
   };
 }
 
@@ -167,7 +168,6 @@ export class JsonStore {
   }
 
   private migrateLegacy(legacyPath: string): MetadataData {
-    console.log("Migrating legacy app-state.json to new architecture...");
     try {
       const raw = fs.readFileSync(legacyPath, "utf8");
       const legacyData = JSON.parse(raw) as PersistedAppData;
@@ -201,7 +201,6 @@ export class JsonStore {
       // Backup and remove legacy file
       const backupPath = path.join(this.baseDir, "app-state.backup.json");
       fs.renameSync(legacyPath, backupPath);
-      console.log("Migration complete.");
       return metadata;
     } catch (e) {
       console.error("Migration failed, starting fresh", e);

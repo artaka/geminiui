@@ -11,6 +11,7 @@ import {
   Message,
   PendingAttachment,
   RuntimeModelOption,
+  UpdateState,
   Workspace
 } from "../shared/types";
 
@@ -66,6 +67,16 @@ const api = {
   },
   bootstrap: {
     load: () => ipcRenderer.invoke("bootstrap:load")
+  },
+  updater: {
+    getStatus: () => ipcRenderer.invoke("updater:getStatus") as Promise<UpdateState>,
+    checkForUpdates: () => ipcRenderer.invoke("updater:checkForUpdates") as Promise<void>,
+    quitAndInstall: () => ipcRenderer.invoke("updater:quitAndInstall") as Promise<void>,
+    onStateChanged: (listener: (state: UpdateState) => void): Unsubscribe => {
+      const wrapped = (_event: IpcRendererEvent, state: UpdateState) => listener(state);
+      ipcRenderer.on("updater:state-changed", wrapped);
+      return () => ipcRenderer.removeListener("updater:state-changed", wrapped);
+    }
   },
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize") as Promise<void>,

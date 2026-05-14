@@ -174,10 +174,10 @@ export function renderAcpToolBody(update: Record<string, unknown>): string {
   }
 
   if (update.rawInput !== undefined) {
-    parts.push(`rawInput: safeStringify(update.rawInput)`);
+    parts.push(`rawInput: ${safeStringify(update.rawInput)}`);
   }
   if (update.rawOutput !== undefined) {
-    parts.push(`rawOutput: safeStringify(update.rawOutput)`);
+    parts.push(`rawOutput: ${safeStringify(update.rawOutput)}`);
   }
 
   return parts.join("\n");

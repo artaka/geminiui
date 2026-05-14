@@ -14,7 +14,13 @@ export function SettingsView() {
   const cliHealth = useAppStore((state) => state.cliHealth);
   const environment = useAppStore((state) => state.environment);
   const models = useAppStore((state) => state.models);
+  const workspaces = useAppStore((state) => state.workspaces);
+  const chats = useAppStore((state) => state.chats);
+  const activeWorkspace = useAppStore((state) => state.activeWorkspace);
   const updateSettings = useAppStore((state) => state.updateSettings);
+  const updateState = useAppStore((state) => state.updateState);
+  const checkForUpdates = useAppStore((state) => state.checkForUpdates);
+  const quitAndInstall = useAppStore((state) => state.quitAndInstall);
   const loadDiagnostics = useAppStore((state) => state.loadDiagnostics);
   const exportLogs = useAppStore((state) => state.exportLogs);
   const recheckCli = useAppStore((state) => state.recheckCli);
@@ -27,6 +33,15 @@ export function SettingsView() {
     void loadDiagnostics();
   }, [loadDiagnostics]);
 
+  const totalRequests = chats.reduce((sum, chat) => sum + (chat.usage?.requestCount ?? 0), 0);
+  const totalTokens = chats.reduce((sum, chat) => sum + (chat.usage?.totalTokens ?? 0), 0);
+
+  const formatCompactNumber = (value: number) =>
+    new Intl.NumberFormat("en", {
+      notation: "compact",
+      maximumFractionDigits: value >= 1000 ? 1 : 0
+    }).format(value);
+
   return (
     <div className="settings-screen">
       <div className="settings-header">
@@ -38,8 +53,8 @@ export function SettingsView() {
       </div>
 
       <div className="settings-grid">
-        <div className="settings-column">
-          <section className="settings-card">
+        <div className="settings-stack-top">
+          <section className="settings-card settings-card-fill">
             <h3>Authentication</h3>
             <p className="muted-text">Gemini authentication is delegated to the installed Gemini CLI. The app only verifies that CLI login has already been completed.</p>
             {environment ? (
@@ -52,10 +67,34 @@ export function SettingsView() {
               </div>
             ) : null}
           </section>
+
+          <section className="settings-card settings-card-fill">
+            <h3>Overview</h3>
+            <div className="diagnostics-grid">
+              <div className="diagnostic-item">
+                <span className="muted-text">Workspaces</span>
+                <div>{workspaces.length}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">Chats</span>
+                <div>{chats.length}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">Requests</span>
+                <div>{formatCompactNumber(totalRequests)}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">Tokens</span>
+                <div>{formatCompactNumber(totalTokens)}</div>
+              </div>
+            </div>
+            <div className="settings-status muted-text">
+              Active workspace: {activeWorkspace?.name ?? "none selected"}.
+            </div>
+          </section>
         </div>
 
-        <div className="settings-column">
-          <section className="settings-card">
+        <section className="settings-card settings-card-gemini">
             <h3>Gemini</h3>
             <label className="field">
               <span>CLI path</span>
@@ -105,34 +144,72 @@ export function SettingsView() {
                 Setup sandbox
               </button>
             </div>
-          </section>
-        </div>
+        </section>
 
-        <section className="settings-card settings-card-wide">
-          <h3>Diagnostics</h3>
+        <section className="settings-card settings-card-updates">
+          <h3>Application Updates</h3>
           <div className="diagnostics-grid">
             <div className="diagnostic-item">
-              <span className="muted-text">App</span>
-              <div>{diagnostics?.appVersion ?? "-"}</div>
+              <span className="muted-text">Status</span>
+              <div>{updateState.status} {updateState.version ? `(v${updateState.version})` : ""}</div>
             </div>
-            <div className="diagnostic-item">
-              <span className="muted-text">Electron</span>
-              <div>{diagnostics?.electronVersion ?? "-"}</div>
-            </div>
-            <div className="diagnostic-item">
-              <span className="muted-text">CLI status</span>
-              <div>{diagnostics?.cliStatus ?? "-"}</div>
-            </div>
-            <div className="diagnostic-item">
-              <span className="muted-text">Auth</span>
-              <div>{diagnostics?.authState ?? "-"}</div>
-            </div>
+            {updateState.progress && (
+              <div className="diagnostic-item">
+                <span className="muted-text">Progress</span>
+                <div>{Math.round(updateState.progress.percent)}%</div>
+              </div>
+            )}
           </div>
+          {updateState.error && (
+            <div className="settings-status" style={{ color: "var(--accent-red)", marginTop: "8px", fontSize: "0.95rem" }}>
+              {updateState.error}
+            </div>
+          )}
           <div className="settings-actions" style={{ marginTop: "12px" }}>
-            <button className="nav-button" onClick={() => void exportLogs()}>
-              Export diagnostics log
-            </button>
+            {updateState.status === "downloaded" ? (
+              <button className="nav-button primary" onClick={() => void quitAndInstall()}>
+                Restart to update
+              </button>
+            ) : (
+              <button
+                className="nav-button"
+                onClick={() => void checkForUpdates()}
+                disabled={updateState.status === "checking" || updateState.status === "downloading"}
+              >
+                {updateState.status === "checking" ? "Checking..." : updateState.status === "downloading" ? "Downloading..." : "Check for updates"}
+              </button>
+            )}
           </div>
+          <p className="muted-text" style={{ marginTop: "12px", fontSize: "0.9rem", lineHeight: "1.4" }}>
+            Updates are not digitally signed. Windows SmartScreen may show a warning - this is expected.
+          </p>
+        </section>
+
+        <section className="settings-card settings-card-diagnostics">
+            <h3>Diagnostics</h3>
+            <div className="diagnostics-grid">
+              <div className="diagnostic-item">
+                <span className="muted-text">App</span>
+                <div>{diagnostics?.appVersion ?? "-"}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">Electron</span>
+                <div>{diagnostics?.electronVersion ?? "-"}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">CLI status</span>
+                <div>{diagnostics?.cliStatus ?? "-"}</div>
+              </div>
+              <div className="diagnostic-item">
+                <span className="muted-text">Auth</span>
+                <div>{diagnostics?.authState ?? "-"}</div>
+              </div>
+            </div>
+            <div className="settings-actions" style={{ marginTop: "12px" }}>
+              <button className="nav-button" onClick={() => void exportLogs()}>
+                Export diagnostics log
+              </button>
+            </div>
         </section>
       </div>
     </div>

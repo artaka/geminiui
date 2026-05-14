@@ -5,6 +5,7 @@ import { app, BrowserWindow, Menu, protocol } from "electron";
 import { GeminiCliManager } from "./cli";
 import { DiagnosticsManager } from "./diagnostics";
 import { EnvironmentManager } from "./environment";
+import { UpdateManager } from "./updater";
 import { registerIpcHandlers } from "./ipc";
 import { getRuntimeConfig } from "./runtime-config";
 import { JsonStore } from "./storage";
@@ -43,7 +44,7 @@ async function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-  mainWindow.webContents.openDevTools({mode:'detach'});
+  //mainWindow.webContents.openDevTools({mode:'detach'});
 
   const rendererUrl = process.env.VITE_DEV_SERVER_URL ?? (!app.isPackaged ? "http://localhost:5173" : undefined);
   if (rendererUrl) {
@@ -69,11 +70,8 @@ app.whenReady().then(async () => {
     // Final normalization to file:/// URL
     // pathToFileURL is the most robust way to do this
     const targetUrl = pathToFileURL(path.resolve(pathPart)).toString();
-    
-    console.log(`[gemini-file] Request: ${url} -> Path: ${pathPart} -> Fetching: ${targetUrl}`);
-    
-    return net.fetch(targetUrl).catch(err => {
-      console.error(`[gemini-file] Failed to fetch ${targetUrl}:`, err);
+
+    return net.fetch(targetUrl).catch(err => {      console.error(`[gemini-file] Failed to fetch ${targetUrl}:`, err);
       throw err;
     });
   });
@@ -84,9 +82,14 @@ app.whenReady().then(async () => {
   const diagnostics = new DiagnosticsManager();
   const runtimeConfig = getRuntimeConfig();
   const environment = new EnvironmentManager(runtimeConfig.dependencies);
-  registerIpcHandlers({ store, cli, diagnostics, environment, runtimeConfig });
+  const updater = new UpdateManager(() => mainWindow);
+  registerIpcHandlers({ store, cli, diagnostics, environment, runtimeConfig, updater });
   createMenu();
   await createWindow();
+
+  if (app.isPackaged) {
+    updater.checkForUpdates();
+  }
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
