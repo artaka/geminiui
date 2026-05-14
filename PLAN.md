@@ -47,7 +47,10 @@ Build an MVP Windows desktop client on Electron that feels close to Codex while 
 - [x] Phase 6: Quality & Testing
     - [x] Vitest environment set up
     - [x] JsonStore unit tests implemented
-- [ ] Phase 7: Polish & Distribution
+- [x] Phase 7: Polish & Distribution
+    - [x] Refactored `ChatView.tsx` into modular components
+    - [x] Added `README.md` for project documentation
+    - [x] Verified build and typecheck success
 
 ## Tech Stack
 

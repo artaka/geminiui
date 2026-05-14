@@ -9,6 +9,7 @@ import {
   DiagnosticsSnapshot,
   EnvironmentStatus,
   Message,
+  PendingAttachment,
   RuntimeModelOption,
   Workspace
 } from "../shared/types";
@@ -24,7 +25,8 @@ const api = {
     list: () => ipcRenderer.invoke("projects:list") as Promise<Workspace[]>,
     add: () => ipcRenderer.invoke("projects:add") as Promise<Workspace | null>,
     setActive: (workspaceId: string) => ipcRenderer.invoke("projects:setActive", workspaceId) as Promise<void>,
-    delete: (workspaceId: string) => ipcRenderer.invoke("projects:delete", workspaceId) as Promise<{ workspaces: Workspace[]; activeWorkspaceId?: string }>
+    delete: (workspaceId: string) => ipcRenderer.invoke("projects:delete", workspaceId) as Promise<{ workspaces: Workspace[]; activeWorkspaceId?: string }>,
+    suggestFiles: (workspaceId: string, query: string) => ipcRenderer.invoke("projects:suggestFiles", { workspaceId, query }) as Promise<string[]>
   },
   chat: {
     list: (workspaceId: string) => ipcRenderer.invoke("chat:list", workspaceId),
@@ -33,8 +35,8 @@ const api = {
     delete: (chatId: string) => ipcRenderer.invoke("chat:delete", chatId) as Promise<void>,
     update: (chatId: string, patch: Partial<ChatSession>) => ipcRenderer.invoke("chat:update", { chatId, patch }) as Promise<ChatSession>,
     search: (query: string, workspaceId?: string) => ipcRenderer.invoke("chat:search", { query, workspaceId }) as Promise<Array<{ chat: ChatSession; message?: Message }>>,
-    send: (chatId: string, prompt: string, assumeAuthenticated?: boolean, userMessageId?: string, assistantMessageId?: string) =>
-      ipcRenderer.invoke("chat:send", { chatId, prompt, assumeAuthenticated, userMessageId, assistantMessageId }) as Promise<{
+    send: (chatId: string, prompt: string, attachments: PendingAttachment[], assumeAuthenticated?: boolean, userMessageId?: string, assistantMessageId?: string) =>
+      ipcRenderer.invoke("chat:send", { chatId, prompt, attachments, assumeAuthenticated, userMessageId, assistantMessageId }) as Promise<{
         userMessage: Message;
         assistantMessage: Message;
       }>,

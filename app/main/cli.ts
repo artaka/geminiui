@@ -1550,6 +1550,7 @@ private emitActivityWithId(
   async sendPrompt(
     chatId: string,
     prompt: string,
+    promptAttachments: Array<Record<string, unknown>>,
     workspacePath: string,
     options?: {
       sessionId?: string;
@@ -1593,7 +1594,7 @@ private emitActivityWithId(
           this.terminateProcess(this.activeProcess, { emitUserVisibleStop: false });
         }
         this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
-        await this.sendPrompt(chatId, prompt, workspacePath, {
+        await this.sendPrompt(chatId, prompt, promptAttachments, workspacePath, {
           ...options,
           sandbox: false,
           allowSandboxFallback: false
@@ -1645,14 +1646,18 @@ private emitActivityWithId(
     this.emitActivity(chatId, "status", startedFresh ? "Persistent session ready" : "Using persistent session", `Session ${state.acpSessionId ?? "pending"} in ${path.basename(workspacePath)}`, "done");
 
     try {
+      const promptBlocks = prompt.trim() || promptAttachments.length === 0
+        ? [
+            ...promptAttachments,
+            {
+              type: "text",
+              text: prompt
+            }
+          ]
+        : promptAttachments;
       const result = await this.sendRpcRequest(state, ACP_METHODS.sessionPrompt, {
         sessionId: state.acpSessionId,
-        prompt: [
-          {
-            type: "text",
-            text: prompt
-          }
-        ]
+        prompt: promptBlocks
       });
       const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : {};
       const stopReason = typeof resultRecord.stopReason === "string" ? resultRecord.stopReason : undefined;
@@ -1698,7 +1703,7 @@ private emitActivityWithId(
       if (this.shouldRetryWithoutSandbox(options, state, error)) {
         this.emitActivity(chatId, "status", "Sandbox unavailable", "Retrying the request without sandbox because Gemini CLI could not start its sandbox image.", "done");
         this.terminateProcess(state, { emitUserVisibleStop: false });
-        await this.sendPrompt(chatId, prompt, workspacePath, {
+        await this.sendPrompt(chatId, prompt, promptAttachments, workspacePath, {
           ...options,
           sandbox: false,
           allowSandboxFallback: false

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { AppSettings, AuthState, ChatSession, ChatUsageSnapshot, CliHealth, Message, Workspace } from "../shared/types";
+import { AppSettings, AuthState, ChatSession, ChatUsageSnapshot, CliHealth, Message, MessageAttachment, PendingAttachment, Workspace } from "../shared/types";
 import { GeminiCliManager } from "./cli";
 import { DiagnosticsManager } from "./diagnostics";
 import { EnvironmentManager } from "./environment";
@@ -138,6 +139,106 @@ export function registerIpcHandlers(deps: {
       .filter((message) => message.role === "assistant" && message.content)
       .map((message) => message.content);
     return history.length > 0 ? history : undefined;
+  };
+
+  const attachmentRoot = path.join(process.cwd(), ".geminiapp-attachments");
+  const textMimePattern = /^(text\/|application\/(json|xml|javascript|typescript|x-sh|x-httpd-php))/i;
+  const textExtensions = new Set([
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md", ".txt", ".css", ".html", ".htm", ".xml", ".yml", ".yaml",
+    ".py", ".cs", ".java", ".kt", ".go", ".rs", ".cpp", ".c", ".h", ".hpp", ".php", ".rb", ".swift", ".sql", ".ps1", ".sh",
+    ".bat", ".cmd", ".toml", ".ini", ".env"
+  ]);
+
+  const ensureAttachmentRoot = () => {
+    if (!fs.existsSync(attachmentRoot)) {
+      fs.mkdirSync(attachmentRoot, { recursive: true });
+    }
+  };
+
+  const sanitizeFileName = (value: string): string => {
+    const base = path.basename(value || "attachment");
+    const sanitized = base.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim();
+    return sanitized || "attachment";
+  };
+
+  const getAttachmentKind = (attachment: PendingAttachment): MessageAttachment["kind"] => {
+    return attachment.kind === "image" || attachment.mimeType.startsWith("image/") ? "image" : "file";
+  };
+
+  const isTextAttachment = (name: string, mimeType: string): boolean => {
+    return textMimePattern.test(mimeType) || textExtensions.has(path.extname(name).toLowerCase());
+  };
+
+  const persistAttachments = (chatId: string, messageId: string, attachments: PendingAttachment[]): MessageAttachment[] => {
+    if (attachments.length === 0) {
+      return [];
+    }
+
+    ensureAttachmentRoot();
+    const targetDir = path.join(attachmentRoot, chatId, messageId);
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    return attachments.map((attachment, index) => {
+      const safeName = sanitizeFileName(attachment.name);
+      const storedName = `${index.toString().padStart(2, "0")}_${safeName}`;
+      const storagePath = path.join(targetDir, storedName);
+      fs.writeFileSync(storagePath, Buffer.from(attachment.dataBase64, "base64"));
+      
+      const fileUrl = pathToFileURL(storagePath).toString();
+      const previewUrl = getAttachmentKind(attachment) === "image" 
+        ? fileUrl.replace("file://", "gemini-file://")
+        : undefined;
+
+      return {
+        id: attachment.id,
+        kind: getAttachmentKind(attachment),
+        name: safeName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        storagePath,
+        previewUrl
+      };
+    });
+  };
+
+  const buildPromptAttachments = (attachments: MessageAttachment[]): Array<Record<string, unknown>> => {
+    return attachments
+      .filter((attachment) => attachment.storagePath && fs.existsSync(attachment.storagePath))
+      .map((attachment) => {
+        const storagePath = attachment.storagePath!;
+        const fileBuffer = fs.readFileSync(storagePath);
+        if (attachment.kind === "image") {
+          return {
+            type: "image",
+            mimeType: attachment.mimeType,
+            data: fileBuffer.toString("base64"),
+            uri: pathToFileURL(storagePath).toString()
+          };
+        }
+
+        const resourceBase = {
+          uri: pathToFileURL(storagePath).toString(),
+          mimeType: attachment.mimeType
+        };
+
+        if (isTextAttachment(attachment.name, attachment.mimeType)) {
+          return {
+            type: "resource",
+            resource: {
+              ...resourceBase,
+              text: fileBuffer.toString("utf8")
+            }
+          };
+        }
+
+        return {
+          type: "resource",
+          resource: {
+            ...resourceBase,
+            blob: fileBuffer.toString("base64")
+          }
+        };
+      });
   };
 
   cli.subscribe((event) => {
@@ -348,7 +449,7 @@ export function registerIpcHandlers(deps: {
     return store.searchChats(payload.query, payload.workspaceId);
   });
 
-  ipcMain.handle("chat:send", async (_event, payload: { chatId: string; prompt: string; assumeAuthenticated?: boolean; userMessageId: string; assistantMessageId: string }) => {
+  ipcMain.handle("chat:send", async (_event, payload: { chatId: string; prompt: string; attachments?: PendingAttachment[]; assumeAuthenticated?: boolean; userMessageId: string; assistantMessageId: string }) => {
     const activeRunChatId = cli.getActiveRunChatId();
     if (activeRunChatId) {
       throw new Error(activeRunChatId === payload.chatId ? "An agent is already running in this chat." : "An agent is already running in another chat. Wait for it to finish before sending a new request.");
@@ -367,11 +468,13 @@ export function registerIpcHandlers(deps: {
 
     const createdAt = new Date().toISOString();
     const assistantReplayHistory = getAssistantReplayHistory(chatPayload.messages);
+    const storedAttachments = persistAttachments(payload.chatId, payload.userMessageId, payload.attachments ?? []);
     const userMessage: Message = {
       id: payload.userMessageId,
       chatId: payload.chatId,
       role: "user",
       content: payload.prompt,
+      attachments: storedAttachments,
       status: "done",
       createdAt
     };
@@ -395,7 +498,7 @@ export function registerIpcHandlers(deps: {
     store.updateSettings({ activeChatId: payload.chatId, activeWorkspaceId: workspace.id });
     cli.activateChat(payload.chatId);
 
-    await cli.sendPrompt(payload.chatId, payload.prompt, workspace.path, {
+    await cli.sendPrompt(payload.chatId, payload.prompt, buildPromptAttachments(storedAttachments), workspace.path, {
       sessionId: chatPayload.session.cliSessionTransport === "acp" ? chatPayload.session.cliSessionId : undefined,
       model: chatPayload.session.model,
       approvalMode: chatPayload.session.approvalMode,
@@ -426,6 +529,54 @@ export function registerIpcHandlers(deps: {
     if (result) {
       throw new Error(result);
     }
+  });
+
+  ipcMain.handle("projects:suggestFiles", async (_event, payload: { workspaceId: string; query: string }) => {
+    const workspace = store.listWorkspaces().find((w) => w.id === payload.workspaceId);
+    if (!workspace || !fs.existsSync(workspace.path)) {
+      return [];
+    }
+
+    const results: string[] = [];
+    const query = payload.query.toLowerCase();
+    const maxResults = 20;
+    const ignoreFolders = new Set(["node_modules", ".git", "dist", "build", ".next", ".cache"]);
+
+    async function walk(currentDir: string, relativePath: string) {
+      if (results.length >= maxResults) return;
+      
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      } catch (e) {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (results.length >= maxResults) break;
+        
+        const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+        const normalizedRelPath = relPath.replace(/\\/g, "/");
+        
+        if (entry.isDirectory()) {
+          if (ignoreFolders.has(entry.name)) continue;
+          await walk(path.join(currentDir, entry.name), relPath);
+        } else {
+          // Non-sequential search: query can be anywhere in name or path
+          if (!query || normalizedRelPath.toLowerCase().includes(query)) {
+            results.push(normalizedRelPath);
+          }
+        }
+      }
+    }
+
+    try {
+      await walk(workspace.path, "");
+    } catch (e) {
+      console.error("Error walking workspace for suggestions:", e);
+    }
+
+    return results;
   });
 
   ipcMain.handle("cli:getStatus", () => cli.getStatus());

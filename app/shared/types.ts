@@ -55,16 +55,38 @@ export type MessageStatus = "done" | "streaming" | "error";
 export type FileChangeKind = "modified" | "created" | "deleted";
 export type FileChangeState = "active" | "reverted";
 export type FileChangeSetState = "ready" | "partial" | "reverted";
+export type MessageAttachmentKind = "image" | "file";
+
+export interface MessageAttachment {
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  storagePath?: string;
+  previewUrl?: string;
+}
 
 export interface Message {
   id: string;
   chatId: string;
   role: MessageRole;
   content: string;
+  attachments?: MessageAttachment[];
   status: MessageStatus;
   createdAt: string;
   durationMs?: number;
   changeSetId?: string;
+}
+
+export interface PendingAttachment {
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+  previewUrl?: string;
 }
 
 export interface FileChangeEntry {

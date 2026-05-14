@@ -10,6 +10,7 @@ import {
   DiagnosticsSnapshot,
   EnvironmentStatus,
   Message,
+  PendingAttachment,
   RuntimeModelOption,
   UserSession,
   Workspace
@@ -57,7 +58,7 @@ interface AppState {
   openChat(chatId: string): Promise<void>;
   deleteChat(chatId: string): Promise<void>;
   updateChat(chatId: string, patch: Partial<ChatSession>): Promise<void>;
-  sendPrompt(prompt: string): Promise<void>;
+  sendPrompt(prompt: string, attachments?: PendingAttachment[]): Promise<void>;
   stopPrompt(): Promise<void>;
   revertChangeSet(changeSetId: string, relativePath?: string): Promise<void>;
   openPath(filePath: string): Promise<void>;
@@ -71,6 +72,7 @@ interface AppState {
   setupSandbox(): Promise<void>;
   setScreen(screen: "chat" | "settings" | "search" | "projects"): void;
   search(query: string): Promise<void>;
+  suggestFiles(query: string): Promise<string[]>;
   applyCliEvent(event: CliEvent): void;
 }
 
@@ -290,7 +292,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  async sendPrompt(prompt: string) {
+  async sendPrompt(prompt: string, attachments: PendingAttachment[] = []) {
     const activeChat = get().activeChat;
     if (!activeChat) {
       return;
@@ -310,6 +312,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       chatId: activeChat.session.id,
       role: "user",
       content: prompt,
+      attachments: attachments.map((attachment) => ({
+        id: attachment.id,
+        kind: attachment.kind,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        previewUrl: attachment.previewUrl
+      })),
       status: "done",
       createdAt: new Date().toISOString()
     };
@@ -335,6 +345,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.gemini.chat.send(
         activeChat.session.id,
         prompt,
+        attachments,
         get().settings?.manualAuthConfirmed,
         userMessageId,
         assistantMessageId
@@ -492,6 +503,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         loading: false,
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+  },
+
+  async suggestFiles(query: string) {
+    const workspace = get().activeWorkspace;
+    if (!workspace) return [];
+    try {
+      return await window.gemini.projects.suggestFiles(workspace.id, query);
+    } catch (error) {
+      console.error("Failed to suggest files:", error);
+      return [];
     }
   },
 

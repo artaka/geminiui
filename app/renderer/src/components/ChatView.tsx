@@ -1,797 +1,15 @@
-import { memo, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import hljs from "highlight.js";
-import { ChatSession, CliActivity, FileChangeEntry, FileChangeSet, Message } from "@shared/types";
+import { ChangeEvent, ClipboardEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChatSession, CliActivity, FileChangeSet, Message, PendingAttachment } from "@shared/types";
 import { useAppStore } from "../store";
 import { CustomDropdown, DropdownOption } from "./CustomDropdown";
-
-function formatClock(value: string): string {
-  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function formatElapsed(durationMs?: number, startAt?: string, tick?: number): string {
-  if (durationMs !== undefined) {
-    const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds}s`;
-  }
-
-  if (!startAt || !tick) {
-    return "0s";
-  }
-
-  const started = new Date(startAt).getTime();
-  const totalSeconds = Math.max(0, Math.floor((tick - started) / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes === 0) {
-    return `${seconds}s`;
-  }
-
-  return `${minutes}m ${seconds}s`;
-}
-
-function renderInlineRichText(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /(!?\[([^\]]+)\]\(([^)]+)\)|<((?:https?:\/\/|mailto:)[^>]+)>|`([^`]+)`|\*\*\*([^*]+)\*\*\*|___([^_]+)___|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\n]+)\*|_([^_\n]+)_)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-
-    if (match[1]?.startsWith("![") && match[2] && match[3]) {
-      const src = match[3];
-      nodes.push(<img key={`${keyPrefix}-img-${match.index}`} className="inline-image" src={src} alt={match[2]} />);
-    } else if (match[2] && match[3]) {
-      const href = match[3];
-      nodes.push(
-        <a key={`${keyPrefix}-link-${match.index}`} className="inline-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-          {renderInlineRichText(match[2], `${keyPrefix}-linktext-${match.index}`)}
-        </a>
-      );
-    } else if (match[4]) {
-      const href = match[4];
-      nodes.push(
-        <a key={`${keyPrefix}-autolink-${match.index}`} className="inline-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-          {href}
-        </a>
-      );
-    } else if (match[5]) {
-      nodes.push(
-        <code key={`${keyPrefix}-code-${match.index}`} className="inline-code">
-          {match[5]}
-        </code>
-      );
-    } else if (match[6] || match[7]) {
-      const content = match[6] ?? match[7] ?? "";
-      nodes.push(
-        <strong key={`${keyPrefix}-strongem-${match.index}`}>
-          <em>{renderInlineRichText(content, `${keyPrefix}-strongem-${match.index}`)}</em>
-        </strong>
-      );
-    } else if (match[8] || match[9]) {
-      const content = match[8] ?? match[9] ?? "";
-      nodes.push(<strong key={`${keyPrefix}-strong-${match.index}`}>{renderInlineRichText(content, `${keyPrefix}-strong-${match.index}`)}</strong>);
-    } else if (match[10]) {
-      nodes.push(<del key={`${keyPrefix}-del-${match.index}`}>{renderInlineRichText(match[10], `${keyPrefix}-del-${match.index}`)}</del>);
-    } else if (match[11] || match[12]) {
-      const content = match[11] ?? match[12] ?? "";
-      nodes.push(<em key={`${keyPrefix}-em-${match.index}`}>{renderInlineRichText(content, `${keyPrefix}-em-${match.index}`)}</em>);
-    }
-
-    lastIndex = pattern.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes;
-}
-
-function InlineRichText(props: { text: string }) {
-  return <>{renderInlineRichText(props.text, "inline")}</>;
-}
-
-function inferCodeLanguageFromPath(filePath: string): string | undefined {
-  const extension = filePath.split(".").pop()?.toLowerCase();
-  switch (extension) {
-    case "ts":
-    case "tsx":
-      return "typescript";
-    case "js":
-    case "jsx":
-      return "javascript";
-    case "py":
-      return "python";
-    case "cs":
-      return "csharp";
-    case "json":
-      return "json";
-    case "css":
-      return "css";
-    case "html":
-      return "xml";
-    case "md":
-      return "markdown";
-    case "yml":
-    case "yaml":
-      return "yaml";
-    case "sh":
-      return "bash";
-    case "ps1":
-      return "powershell";
-    default:
-      return undefined;
-  }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function highlightDiffLine(line: string, language?: string): { prefix: string; html: string; tone: "addition" | "deletion" | "context" } {
-  const prefix = line.startsWith("+") || line.startsWith("-") ? line[0] : " ";
-  const content = prefix === " " ? line : line.slice(1);
-  let html = escapeHtml(content);
-
-  try {
-    if (language && hljs.getLanguage(language)) {
-      html = hljs.highlight(content, { language, ignoreIllegals: true }).value;
-    } else {
-      html = hljs.highlightAuto(content).value;
-    }
-  } catch {
-    html = escapeHtml(content);
-  }
-
-  return {
-    prefix,
-    html,
-    tone: prefix === "+" ? "addition" : prefix === "-" ? "deletion" : "context"
-  };
-}
-
-type RenderableDiffLine =
-  | {
-      type: "line";
-      key: string;
-      prefix: string;
-      html: string;
-      tone: "addition" | "deletion" | "context";
-      oldLine: number | null;
-      newLine: number | null;
-    }
-  | {
-      type: "gap";
-      key: string;
-      hiddenCount: number;
-    };
-
-function buildRenderableDiffLines(diffPreview: string, language?: string): RenderableDiffLine[] {
-  const rawLines = (diffPreview || "(No preview available)").split("\n");
-  const parsed = rawLines.map((line, index) => {
-    const highlighted = highlightDiffLine(line, language);
-    return {
-      index,
-      ...highlighted
-    };
-  });
-
-  const changedIndexes = parsed
-    .filter((line) => line.tone !== "context")
-    .map((line) => line.index);
-
-  const visibleIndexes = new Set<number>();
-  if (changedIndexes.length === 0) {
-    parsed.forEach((line) => visibleIndexes.add(line.index));
-  } else {
-    for (const changedIndex of changedIndexes) {
-      for (let i = Math.max(0, changedIndex - 5); i <= Math.min(parsed.length - 1, changedIndex + 5); i += 1) {
-        visibleIndexes.add(i);
-      }
-    }
-  }
-
-  const result: RenderableDiffLine[] = [];
-  let oldLineNumber = 1;
-  let newLineNumber = 1;
-  let index = 0;
-
-  while (index < parsed.length) {
-    if (!visibleIndexes.has(index)) {
-      const gapStart = index;
-      while (index < parsed.length && !visibleIndexes.has(index)) {
-        const tone = parsed[index].tone;
-        if (tone !== "addition") {
-          oldLineNumber += 1;
-        }
-        if (tone !== "deletion") {
-          newLineNumber += 1;
-        }
-        index += 1;
-      }
-      result.push({
-        type: "gap",
-        key: `gap-${gapStart}`,
-        hiddenCount: index - gapStart
-      });
-      continue;
-    }
-
-    const line = parsed[index];
-    const oldLine = line.tone === "addition" ? null : oldLineNumber;
-    const newLine = line.tone === "deletion" ? null : newLineNumber;
-    result.push({
-      type: "line",
-      key: `line-${index}`,
-      prefix: line.prefix,
-      html: line.html,
-      tone: line.tone,
-      oldLine,
-      newLine
-    });
-
-    if (line.tone !== "addition") {
-      oldLineNumber += 1;
-    }
-    if (line.tone !== "deletion") {
-      newLineNumber += 1;
-    }
-    index += 1;
-  }
-
-  return result;
-}
-
-const DiffPreview = memo(function DiffPreview(props: { file: FileChangeEntry }) {
-  const language = useMemo(() => inferCodeLanguageFromPath(props.file.path), [props.file.path]);
-  const lines = useMemo(() => buildRenderableDiffLines(props.file.diffPreview || "(No preview available)", language), [props.file.diffPreview, language]);
-
-  return (
-    <pre className="change-file-diff">
-      <code className="hljs diff-code">
-        {lines.map((line) =>
-          line.type === "gap" ? (
-            <div key={line.key} className="diff-gap">
-              <span className="diff-line-number">...</span>
-              <span className="diff-line-number">...</span>
-              <span className="diff-gap-text">Skipped {line.hiddenCount} unchanged lines</span>
-            </div>
-          ) : (
-            <div key={line.key} className={`diff-line ${line.tone}`}>
-              <span className="diff-line-number">{line.oldLine ?? ""}</span>
-              <span className="diff-line-number">{line.newLine ?? ""}</span>
-              <span className={`diff-prefix ${line.tone}`}>{line.prefix}</span>
-              <span className="diff-line-code" dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }} />
-            </div>
-          )
-        )}
-      </code>
-    </pre>
-  );
-});
-
-const RichTextMessage = memo(function RichTextMessage(props: { text: string }) {
-  const normalized = props.text.replace(/\r\n/g, "\n");
-  const segments = normalized.split(/```/g);
-  const blocks: ReactNode[] = [];
-
-  const pushTextBlock = (textBlock: string, keyPrefix: string) => {
-    const lines = textBlock.split("\n");
-    const localBlocks: ReactNode[] = [];
-    let index = 0;
-
-    while (index < lines.length) {
-      const line = lines[index].trimEnd();
-      const trimmedLine = line.trim();
-
-      if (!trimmedLine) {
-        index += 1;
-        continue;
-      }
-
-      if (trimmedLine.startsWith("#")) {
-        const level = Math.min(3, trimmedLine.match(/^#+/)?.[0].length ?? 1);
-        const content = trimmedLine.replace(/^#+\s*/, "");
-        const Tag = `h${level}` as "h1" | "h2" | "h3";
-        localBlocks.push(
-          <Tag key={`${keyPrefix}-heading-${index}`} className="rich-heading">
-            <InlineRichText text={content} />
-          </Tag>
-        );
-        index += 1;
-        continue;
-      }
-
-      if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmedLine)) {
-        localBlocks.push(<hr key={`${keyPrefix}-hr-${index}`} className="rich-divider" />);
-        index += 1;
-        continue;
-      }
-
-      if (/^[-*]\s+/.test(trimmedLine)) {
-        const items: Array<{ text: string; checked?: boolean }> = [];
-        while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-          const itemText = lines[index].trim().replace(/^[-*]\s+/, "");
-          const taskMatch = itemText.match(/^\[( |x|X)\]\s+(.*)$/);
-          items.push(taskMatch ? { text: taskMatch[2], checked: taskMatch[1].toLowerCase() === "x" } : { text: itemText });
-          index += 1;
-        }
-        localBlocks.push(
-          <ul key={`${keyPrefix}-list-${index}`} className="rich-list">
-            {items.map((item, itemIndex) => (
-              <li key={`${keyPrefix}-li-${itemIndex}`}>
-                {typeof item.checked === "boolean" ? <input className="task-checkbox" type="checkbox" checked={item.checked} readOnly /> : null}
-                <InlineRichText text={item.text} />
-              </li>
-            ))}
-          </ul>
-        );
-        continue;
-      }
-
-      if (/^\d+\.\s+/.test(trimmedLine)) {
-        const items: string[] = [];
-        while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
-          items.push(lines[index].trim().replace(/^\d+\.\s+/, ""));
-          index += 1;
-        }
-        localBlocks.push(
-          <ol key={`${keyPrefix}-olist-${index}`} className="rich-list rich-list-ordered">
-            {items.map((item, itemIndex) => (
-              <li key={`${keyPrefix}-oli-${itemIndex}`}>
-                <InlineRichText text={item} />
-              </li>
-            ))}
-          </ol>
-        );
-        continue;
-      }
-
-      if (trimmedLine.startsWith(">")) {
-        const quotes: string[] = [];
-        while (index < lines.length && lines[index].trim().startsWith(">")) {
-          quotes.push(lines[index].trim().replace(/^>\s?/, ""));
-          index += 1;
-        }
-        localBlocks.push(
-          <blockquote key={`${keyPrefix}-quote-${index}`} className="rich-quote">
-            <InlineRichText text={quotes.join(" ")} />
-          </blockquote>
-        );
-        continue;
-      }
-
-      if (trimmedLine.startsWith("|")) {
-        const tableLines: string[] = [];
-        while (index < lines.length && lines[index].trim().startsWith("|")) {
-          tableLines.push(lines[index].trim());
-          index += 1;
-        }
-
-        if (tableLines.length >= 2) {
-          const headerRows = tableLines[0]
-            .split("|")
-            .filter((_, i, arr) => i > 0 && i < arr.length - 1)
-            .map((s) => s.trim());
-          const separatorRow = tableLines[1];
-          const isTable = /^[|\s-:]+$/.test(separatorRow);
-
-          if (isTable) {
-            const bodyRows = tableLines.slice(2).map((row) =>
-              row
-                .split("|")
-                .filter((_, i, arr) => i > 0 && i < arr.length - 1)
-                .map((s) => s.trim())
-            );
-
-            localBlocks.push(
-              <div key={`${keyPrefix}-table-wrap-${index}`} className="rich-table-wrap">
-                <table className="rich-table">
-                  <thead>
-                    <tr>
-                      {headerRows.map((cell, i) => (
-                        <th key={i}>
-                          <InlineRichText text={cell} />
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bodyRows.map((row, i) => (
-                      <tr key={i}>
-                        {row.map((cell, j) => (
-                          <td key={j}>
-                            <InlineRichText text={cell} />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-            continue;
-          } else {
-            // Not a valid table separator, backtrack index and treat as paragraphs
-            index -= tableLines.length;
-          }
-        } else {
-           // Not enough lines for a table, backtrack
-           index -= tableLines.length;
-        }
-      }
-
-      const paragraph: string[] = [];
-      while (index < lines.length) {
-        const current = lines[index].trimEnd();
-        const trimmed = current.trim();
-        if (!trimmed || trimmed.startsWith("#") || /^[-*]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed) || trimmed.startsWith(">")) {
-          break;
-        }
-        paragraph.push(trimmed);
-        index += 1;
-      }
-      localBlocks.push(
-        <p key={`${keyPrefix}-paragraph-${index}`} className="rich-paragraph">
-          <InlineRichText text={paragraph.join(" ")} />
-        </p>
-      );
-
-    }
-
-    blocks.push(...localBlocks);
-  };
-
-  segments.forEach((segment, segmentIndex) => {
-    if (segmentIndex % 2 === 1) {
-      const [language, ...bodyLines] = segment.split("\n");
-      const body = bodyLines.length > 0 ? bodyLines.join("\n") : language;
-      const codeLanguage = bodyLines.length > 0 ? language.trim() : "";
-      const normalizedLanguage = codeLanguage.toLowerCase();
-
-      let highlightedCode = "";
-      try {
-        if (normalizedLanguage && hljs.getLanguage(normalizedLanguage)) {
-          highlightedCode = hljs.highlight(body.trim(), { language: normalizedLanguage, ignoreIllegals: true }).value;
-        } else {
-          highlightedCode = body.trim()
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
-        }
-      } catch (e) {
-        highlightedCode = body.trim();
-      }
-
-      blocks.push(
-        <div key={`code-${segmentIndex}`} className="rich-code-block">
-          <div className="rich-code-header">
-            <div className="rich-code-label">{codeLanguage || "code"}</div>
-            <button className="rich-code-copy" type="button" onClick={() => void navigator.clipboard.writeText(body.trim())} title="Copy code" aria-label="Copy code">
-              <ActionIcon name="copy" />
-            </button>
-          </div>
-          <pre>
-            <code className="hljs" dangerouslySetInnerHTML={{ __html: highlightedCode }} />
-          </pre>
-        </div>
-      );
-    } else {
-      pushTextBlock(segment, `segment-${segmentIndex}`);
-    }
-  });
-
-  return <div className="rich-text">{blocks}</div>;
-});
-
-function ActivityIcon(props: { activity: CliActivity }) {
-  if (props.activity.status === "error" || props.activity.kind === "stderr" || props.activity.kind === "error" || props.activity.tone === "error") {
-    return (
-      <div className="activity-icon-wrap error">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="10" cy="10" r="8" />
-          <line x1="10" y1="8" x2="10" y2="12" />
-          <line x1="10" y1="16" x2="10.01" y2="16" />
-        </svg>
-      </div>
-    );
-  }
-
-  if (props.activity.status === "running") {
-    return (
-      <div className="activity-icon-wrap running">
-        <div className="activity-spinner" />
-      </div>
-    );
-  }
-
-  const getIcon = () => {
-    switch (props.activity.tone) {
-      case "reasoning":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z" />
-            <path d="M12 6v6l4 2" />
-          </svg>
-        );
-      case "read":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5z" />
-            <path d="M8 6h10" />
-            <path d="M8 10h10" />
-            <path d="M8 14h10" />
-          </svg>
-        );
-      case "search":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-        );
-      case "write":
-      case "edit":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-          </svg>
-        );
-      case "fetch":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-        );
-      case "execute":
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="4 17 10 11 4 5" />
-            <line x1="12" y1="19" x2="20" y2="19" />
-          </svg>
-        );
-      default:
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        );
-    }
-  };
-
-  return <div className={`activity-icon-wrap ${props.activity.tone ?? "done"}`}>{getIcon()}</div>;
-}
-
-function ActivityItem(props: { activity: CliActivity }) {
-  const details = props.activity.details ?? props.activity.body;
-  const showDetails = details.trim() && details.trim() !== (props.activity.reason ?? "").trim() && details.trim() !== (props.activity.target ?? "").trim();
-  const isLong = details.includes("\n") || details.length > 120;
-  const prefersMarkdown = props.activity.tone === "reasoning";
-
-  return (
-    <div className={`agent-step-v2 ${props.activity.status} tone-${props.activity.tone ?? "default"}`}>
-      <div className="agent-step-v2-icon">
-        <ActivityIcon activity={props.activity} />
-      </div>
-      <div className="agent-step-v2-content">
-        <div className="agent-step-v2-header">
-          <span className="agent-step-v2-title">{props.activity.title}</span>
-          {props.activity.target ? <code className="agent-step-v2-target">{props.activity.target}</code> : null}
-          <span className="agent-step-v2-spacer" />
-          <span className="agent-step-v2-time">{formatClock(props.activity.createdAt)}</span>
-        </div>
-
-        {props.activity.reason ? (
-          <div className={`agent-step-v2-reason ${prefersMarkdown ? "markdown" : ""}`}>
-            {prefersMarkdown ? <RichTextMessage text={props.activity.reason} /> : props.activity.reason}
-          </div>
-        ) : null}
-
-        {showDetails ? (
-          <div className="agent-step-v2-details-wrap">
-            {isLong ? (
-              <details className="agent-step-v2-details">
-                <summary>{props.activity.status === "error" ? "View error details" : "Show output"}</summary>
-                <div className="agent-step-v2-details-body">
-                  {prefersMarkdown ? <RichTextMessage text={details} /> : <pre>{details}</pre>}
-                </div>
-              </details>
-            ) : (
-              <div className="agent-step-v2-meta">
-                {prefersMarkdown ? <RichTextMessage text={details} /> : details}
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ActionIcon(props: { name: "copy" | "retry" | "chevron" | "plus" | "undo" | "open" | "arrow-down" }) {
-  switch (props.name) {
-    case "copy":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-            <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9 9V6.2c0-1.12 0-1.68.218-2.108.192-.377.497-.682.874-.874C10.52 3 11.08 3 12.2 3h5.6c1.12 0 1.68 0 2.108.218a2 2 0 0 1 .874.874C21 4.52 21 5.08 21 6.2v5.6c0 1.12 0 1.68-.218 2.108a2.002 2.002 0 0 1-.874.874C19.48 15 18.92 15 17.803 15H15M9 9H6.2c-1.12 0-1.68 0-2.108.218a1.999 1.999 0 0 0-.874.874C3 10.52 3 11.08 3 12.2v5.6c0 1.12 0 1.68.218 2.108a2 2 0 0 0 .874.874c.427.218.987.218 2.105.218h5.607c1.117 0 1.676 0 2.104-.218.376-.192.683-.498.874-.874.218-.428.218-.987.218-2.105V15M9 9h2.8c1.12 0 1.68 0 2.108.218a2 2 0 0 1 .874.874c.218.427.218.987.218 2.105V15"
-                transform="translate(1.223 .827) scale(.76317)"
-            />
-        </svg>
-      );
-    case "retry":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-            <g transform="matrix(.9046 0 0 .9046 2.559 1.851)">
-                <path
-                    strokeWidth={0.6}
-                    fill="currentColor"
-                    d="M14.003 10.859c-.479 3.309-3.678 5.754-7.258 5.005-2.274-.476-4.122-2.307-4.6-4.571C1.33 7.422 4.007 4 8.022 4v2l5.02-3-5.02-3v2C3.003 2-.84 6.483.16 11.605c.608 3.119 3.136 5.633 6.266 6.239 4.745.918 8.945-2.328 9.565-6.718.085-.596-.398-1.126-1.001-1.126a.997.997 0 0 0-.986.859"
-                />
-            </g>
-        </svg>
-      );
-    case "chevron":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M7 5l6 5-6 5" />
-        </svg>
-      );
-    case "plus":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M10 4v12M4 10h12" />
-        </svg>
-      );
-    case "undo":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-            <g transform="matrix(.68255 0 0 .68255 3.123 1.584)">
-                <title>{"arrow_right [#368]"}</title>
-                <path
-                    strokeWidth={0.6}
-                    fill="currentColor"
-                    fillRule="evenodd"
-                    d="M10 18h5.828l-3.242-3.243L14 13.343 19.657 19 14 24.657l-1.414-1.414L15.828 20H10C4.477 20 0 15.523 0 10S4.477 0 10 0h10v2H10a8 8 0 0 0 0 16"
-                />
-            </g>
-        </svg>
-      );
-    case "open":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M12 4h4v4" />
-          <path d="M11 9l5-5" />
-          <path d="M8 4H6a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-2" />
-        </svg>
-      );
-    case "arrow-down":
-      return (
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M10 3v13" />
-          <path d="M4.5 10.5L10 16l5.5-5.5" />
-        </svg>
-      );
-    default:
-      return null;
-  }
-}
-
-function summarizeChangedFiles(changeSet: FileChangeSet): string {
-  if (changeSet.fileCount === 1) {
-    return "Changed 1 file";
-  }
-  return `Changed ${changeSet.fileCount} files`;
-}
-
-const ChangeSetPanel = memo(function ChangeSetPanel(props: {
-  changeSet: FileChangeSet;
-  onOpenPath: (filePath: string) => void;
-  onRequestRevert: (changeSetId: string, relativePath?: string) => void;
-}) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-
-  const toggleFile = (relativePath: string) => {
-    setExpanded((current) => ({ ...current, [relativePath]: !current[relativePath] }));
-  };
-
-  return (
-    <section className="change-set-card">
-      <div className="change-set-header">
-        <div className="change-set-summary">
-          <span>{summarizeChangedFiles(props.changeSet)}</span>
-          <span className="diff-stats additions">+{props.changeSet.totalAdditions}</span>
-          <span className="diff-stats deletions">-{props.changeSet.totalDeletions}</span>
-        </div>
-        <div className="change-set-actions">
-          <button
-            className="change-set-action"
-            onClick={() => props.onRequestRevert(props.changeSet.id)}
-            disabled={props.changeSet.status === "reverted"}
-            title="Revert all files from this agent run"
-          >
-            <ActionIcon name="undo" />
-            <span>Revert</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="change-set-files">
-        {props.changeSet.files.map((file) => {
-          const isExpanded = expanded[file.relativePath] ?? false;
-          return (
-            <div key={file.relativePath} className={`change-file-row ${file.state === "reverted" ? "reverted" : ""}`}>
-              <button className="change-file-summary" onClick={() => toggleFile(file.relativePath)} aria-expanded={isExpanded}>
-                <span className="change-file-path">{file.relativePath}</span>
-                <span className={`change-file-kind ${file.kind}`}>{file.kind}</span>
-                <span className="diff-stats additions">+{file.additions}</span>
-                <span className="diff-stats deletions">-{file.deletions}</span>
-                <span className={`chevron-icon ${isExpanded ? "expanded" : ""}`}>
-                  <ActionIcon name="chevron" />
-                </span>
-              </button>
-
-              {isExpanded ? (
-                <div className="change-file-details">
-                  <div className="change-file-toolbar">
-                    <button className="icon-link-button" onClick={() => props.onOpenPath(file.path)} title="Open file" aria-label="Open file">
-                      <ActionIcon name="open" />
-                    </button>
-                    <button
-                      className="icon-link-button"
-                      onClick={() => props.onRequestRevert(props.changeSet.id, file.relativePath)}
-                      disabled={file.state === "reverted"}
-                      title={file.state === "reverted" ? "Already reverted" : "Revert this file"}
-                      aria-label="Revert this file"
-                    >
-                      <ActionIcon name="undo" />
-                    </button>
-                  </div>
-                  <DiffPreview file={file} />
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-});
-
-function UserBubble(props: { message: Message }) {
-  return (
-    <div className="user-bubble-row">
-      <div className="user-bubble">
-        <div className="user-bubble-body">{props.message.content}</div>
-      </div>
-      <div className="user-bubble-actions external">
-        <button className="icon-link-button" onClick={() => void navigator.clipboard.writeText(props.message.content)} title="Copy message" aria-label="Copy message">
-          <ActionIcon name="copy" />
-        </button>
-        <span className="muted-text">{formatClock(props.message.createdAt)}</span>
-      </div>
-    </div>
-  );
-}
+import { CommandSuggestions } from "./CommandSuggestions";
+import { FileSuggestions } from "./FileSuggestions";
+import { CHAT_COMMANDS, ChatCommand } from "../commands";
+
+import { ActionIcon } from "./chat/Glyphs";
+import { AttachmentPreviewList } from "./chat/AttachmentPreviewList";
+import { UserBubble, AssistantResponse } from "./chat/MessageBubbles";
+import { fileToPendingAttachment } from "./chat/ChatUtils";
 
 type AccessPreset = "default-permissions" | "auto-review" | "full-access";
 
@@ -822,113 +40,6 @@ const ACCESS_PRESET_OPTIONS: DropdownOption[] = [
   { value: "full-access", label: "Full access" }
 ];
 
-const AssistantResponse = memo(function AssistantResponse(props: {
-  message: Message;
-  activities: CliActivity[];
-  changeSet?: FileChangeSet;
-  isLatest?: boolean;
-  isBusy?: boolean;
-  tick: number;
-  onRegenerate?: (prompt: string) => void;
-  lastUserPrompt?: string;
-  onOpenPath?: (filePath: string) => void;
-  onRequestRevert?: (changeSetId: string, relativePath?: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(props.isBusy);
-
-  useEffect(() => {
-    if (props.isBusy) {
-      setExpanded(true);
-    } else if (props.isLatest) {
-      setExpanded(false);
-    }
-  }, [props.isBusy, props.isLatest]);
-
-  const runCompleted = props.message.status === "done" || props.message.status === "error";
-  const showRunPanel = props.activities.length > 0 || (props.isLatest && props.isBusy);
-
-  return (
-    <div className={`assistant-response-group ${props.isLatest ? "latest" : ""}`}>
-      {showRunPanel ? (
-        <section className="agent-run-wrap">
-          <button className="agent-run-toggle" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
-            <span>
-              {runCompleted
-                ? `Worked for ${formatElapsed(props.message.durationMs)}`
-                : `Working for ${formatElapsed(undefined, props.message.createdAt, props.tick)}`}
-            </span>
-            <span className={`chevron-icon ${expanded ? "expanded" : ""}`}>
-              <ActionIcon name="chevron" />
-            </span>
-          </button>
-          {expanded ? (
-            <div className="agent-run-panel">
-              <div className="agent-run-timeline">
-                {props.activities.map((activity) => (
-                  <ActivityItem key={activity.id} activity={activity} />
-                ))}
-                {props.isLatest && props.isBusy ? (
-                  <div className="agent-step running ghost">
-                    <div className="agent-step-rail">
-                      <span className="activity-dot running" />
-                    </div>
-                    <div className="agent-step-content">
-                      <div className="agent-step-header">
-                        <div className="agent-step-title">Generating answer</div>
-                        <div className="agent-step-time">Live</div>
-                      </div>
-                      <div className="agent-step-body">Streaming assistant response into the final answer block.</div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      <div className={`assistant-response-block ${props.isLatest ? "latest" : ""} ${props.message.status}`}>
-        {props.message.content ? (
-          <RichTextMessage text={props.message.content} />
-        ) : props.isLatest ? (
-          <div className="assistant-placeholder">
-            <span className="assistant-placeholder-dot" />
-            <span>{props.message.status === "error" ? "The run ended with an error." : "Waiting for the assistant response..."}</span>
-          </div>
-        ) : null}
-        {props.changeSet && props.onOpenPath && props.onRequestRevert ? (
-          <ChangeSetPanel changeSet={props.changeSet} onOpenPath={props.onOpenPath} onRequestRevert={props.onRequestRevert} />
-        ) : null}
-        <div className="assistant-response-toolbar">
-          <div className="assistant-response-actions">
-            <button
-              className="icon-link-button"
-              onClick={() => void navigator.clipboard.writeText(props.message.content)}
-              disabled={!props.message.content}
-              title="Copy answer"
-              aria-label="Copy answer"
-            >
-              <ActionIcon name="copy" />
-            </button>
-            {props.isLatest && props.lastUserPrompt && props.onRegenerate ? (
-              <button
-                className="icon-link-button"
-                onClick={() => props.onRegenerate?.(props.lastUserPrompt!)}
-                disabled={props.isBusy}
-                title="Regenerate answer"
-                aria-label="Regenerate answer"
-              >
-                <ActionIcon name="retry" />
-              </button>
-            ) : null}
-          </div>
-          <div className="assistant-response-meta">{formatClock(props.message.createdAt)}</div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
 export function ChatView() {
   const activeWorkspace = useAppStore((state) => state.activeWorkspace);
   const activeChat = useAppStore((state) => state.activeChat);
@@ -947,10 +58,21 @@ export function ChatView() {
   const openPath = useAppStore((state) => state.openPath);
   const [prompt, setPrompt] = useState("");
   const [tick, setTick] = useState(Date.now());
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [isDragActive, setIsDragActive] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const mirrorRef = useRef<HTMLDivElement | null>(null);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
   const [revertTarget, setRevertTarget] = useState<{ changeSetId: string; relativePath?: string } | null>(null);
   const [revertError, setRevertError] = useState<string | null>(null);
+  const [commandQuery, setCommandQuery] = useState<string | null>(null);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [fileQuery, setFileQuery] = useState<string | null>(null);
+  const [fileIndex, setFileIndex] = useState(0);
+  const [fileSuggestions, setFileSuggestions] = useState<string[]>([]);
+  const [mentionMap, setMentionMap] = useState<Record<string, string>>({});
 
   const isGlobalBusy = cliStatus === "starting" || cliStatus === "streaming" || cliStatus === "busy";
   const isBusy = isGlobalBusy && (!activeRunChatId || activeRunChatId === activeChat?.session.id);
@@ -965,14 +87,253 @@ export function ChatView() {
     return () => window.clearInterval(timer);
   }, [isBusy]);
 
-  const handleSend = () => {
-    const value = prompt.trim();
-    if (!value || isGlobalBusy) {
+  useEffect(() => {
+    setPrompt("");
+    setPendingAttachments([]);
+    setIsDragActive(false);
+    setCommandQuery(null);
+    setFileQuery(null);
+    setMentionMap({});
+  }, [activeChat?.session.id]);
+
+  const suggestFiles = useAppStore((state) => state.suggestFiles);
+
+  const filteredCommands = useMemo(() => {
+    if (commandQuery === null) return [];
+    return CHAT_COMMANDS.filter((cmd) =>
+      cmd.command.toLowerCase().startsWith(commandQuery.toLowerCase())
+    );
+  }, [commandQuery]);
+
+  const handleSelectCommand = useCallback((cmd: ChatCommand) => {
+    if (commandQuery === null) return;
+    setPrompt((current) => {
+      const before = current.slice(0, current.lastIndexOf(commandQuery));
+      return before + cmd.command + (cmd.args ? " " : "");
+    });
+    setCommandQuery(null);
+    setCommandIndex(0);
+  }, [commandQuery]);
+
+  const handleSelectFile = useCallback((file: string) => {
+    if (fileQuery === null) return;
+    const parts = file.split("/");
+    const fileName = parts.pop() || file;
+    const mentionKey = "@" + fileName;
+    
+    setMentionMap(prev => ({ ...prev, [mentionKey]: file }));
+    
+    setPrompt((current) => {
+      const textarea = textareaRef.current;
+      const cursorPos = textarea?.selectionStart || current.length;
+      const beforeTrigger = current.slice(0, cursorPos - fileQuery.length);
+      const afterTrigger = current.slice(cursorPos);
+      return beforeTrigger + mentionKey + " " + afterTrigger;
+    });
+    setFileQuery(null);
+    setFileIndex(0);
+    setFileSuggestions([]);
+    
+    setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 0);
+  }, [fileQuery]);
+
+  const handlePromptChange = async (value: string) => {
+    setPrompt(value);
+    
+    const textarea = textareaRef.current;
+    const cursorPos = textarea?.selectionStart || value.length;
+    const textBeforeCursor = value.slice(0, cursorPos);
+    
+    const cmdMatch = textBeforeCursor.match(/(?:^|\n)\/(\w*)$/);
+    if (cmdMatch) {
+      setCommandQuery("/" + cmdMatch[1]);
+      setCommandIndex(0);
+      setFileQuery(null);
+      return;
+    } else {
+      setCommandQuery(null);
+    }
+
+    const fileMatch = textBeforeCursor.match(/@(\w*)$/);
+    if (fileMatch) {
+      const query = fileMatch[1];
+      const trigger = fileMatch[0];
+      setFileQuery(trigger);
+      setFileIndex(0);
+      try {
+        const suggestions = await suggestFiles(query);
+        setFileSuggestions(suggestions);
+      } catch (err) {
+        console.error("[ChatView] Failed to get file suggestions:", err);
+      }
+    } else {
+      setFileQuery(null);
+      setFileSuggestions([]);
+    }
+  };
+
+  const renderHighlightedPrompt = () => {
+    if (!prompt) return null;
+    
+    // Create regex from mention keys
+    const keys = Object.keys(mentionMap);
+    if (keys.length === 0) return prompt;
+    
+    const escapedKeys = keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const regex = new RegExp(`(${escapedKeys})`, "g");
+    
+    const parts = prompt.split(regex);
+    return parts.map((part, i) => {
+      if (mentionMap[part]) {
+        return (
+          <span key={i} className="mention-highlight" title={mentionMap[part]}>
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
+  };
+
+  // Sync scroll between textarea and mirror
+  const handleScroll = () => {
+    if (textareaRef.current && mirrorRef.current) {
+      mirrorRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (commandQuery !== null && filteredCommands.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setCommandIndex((i) => (i + 1) % filteredCommands.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setCommandIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (event.key === "Tab" || event.key === "Enter") {
+        event.preventDefault();
+        handleSelectCommand(filteredCommands[commandIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCommandQuery(null);
+        return;
+      }
+    }
+
+    if (fileQuery !== null && fileSuggestions.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setFileIndex((i) => (i + 1) % fileSuggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setFileIndex((i) => (i - 1 + fileSuggestions.length) % fileSuggestions.length);
+        return;
+      }
+      if (event.key === "Tab" || event.key === "Enter") {
+        event.preventDefault();
+        handleSelectFile(fileSuggestions[fileIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setFileQuery(null);
+        setFileSuggestions([]);
+        return;
+      }
+    }
+
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      handleSend();
+    }
+  };
+
+  const appendPendingFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) {
       return;
     }
-    void sendPrompt(value);
+
+    const nextAttachments = await Promise.all(
+      files
+        .filter((file) => file.size > 0)
+        .map((file) => fileToPendingAttachment(file))
+    );
+
+    setPendingAttachments((current) => {
+      const dedupe = new Set(current.map((attachment) => `${attachment.name}:${attachment.size}:${attachment.dataBase64.slice(0, 32)}`));
+      const merged = [...current];
+      for (const attachment of nextAttachments) {
+        const key = `${attachment.name}:${attachment.size}:${attachment.dataBase64.slice(0, 32)}`;
+        if (!dedupe.has(key)) {
+          dedupe.add(key);
+          merged.push(attachment);
+        }
+      }
+      return merged;
+    });
+  }, []);
+
+  const handleSend = () => {
+    const value = prompt.trim();
+    if ((!value && pendingAttachments.length === 0) || isGlobalBusy) {
+      return;
+    }
+    void sendPrompt(value, pendingAttachments);
     setPrompt("");
+    setPendingAttachments([]);
+    setIsDragActive(false);
   };
+
+  const removePendingAttachment = useCallback((attachmentId: string) => {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }, []);
+
+  const handleFileInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    void appendPendingFiles(files);
+    event.target.value = "";
+  }, [appendPendingFiles]);
+
+  const handleTextareaPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (files.length > 0) {
+      event.preventDefault();
+      void appendPendingFiles(files);
+    }
+  }, [appendPendingFiles]);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (Array.from(event.dataTransfer.types).includes("Files")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setIsDragActive(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDragActive(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragActive(false);
+    const files = Array.from(event.dataTransfer.files ?? []);
+    void appendPendingFiles(files);
+  }, [appendPendingFiles]);
 
   const chatMessages = activeChat?.messages ?? [];
   const chatActivities = activeChat?.activities ?? [];
@@ -1134,22 +495,42 @@ export function ChatView() {
       ) : null}
 
       <div className="composer-wrap">
-        <div className="composer">
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder="Describe the task for Gemini CLI..."
-            rows={2}
+        {commandQuery !== null ? (
+          <CommandSuggestions
+            query={commandQuery}
+            selectedIndex={commandIndex}
+            onSelect={handleSelectCommand}
           />
+        ) : null}
+        {fileQuery !== null ? (
+          <FileSuggestions
+            files={fileSuggestions}
+            selectedIndex={fileIndex}
+            onSelect={handleSelectFile}
+            query={fileQuery.startsWith("@") ? fileQuery.slice(1) : fileQuery}
+          />
+        ) : null}
+        <div className={`composer ${isDragActive ? "drag-active" : ""}`.trim()} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+          <input ref={fileInputRef} className="composer-file-input" type="file" multiple onChange={handleFileInputChange} />
+          {pendingAttachments.length > 0 ? <AttachmentPreviewList attachments={pendingAttachments} onRemove={removePendingAttachment} /> : null}
+          <div className="composer-textarea-container">
+            <div ref={mirrorRef} className="composer-mirror">
+              {renderHighlightedPrompt()}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={prompt}
+              onChange={(event) => handlePromptChange(event.target.value)}
+              onPaste={handleTextareaPaste}
+              onKeyDown={handleKeyDown}
+              onScroll={handleScroll}
+              placeholder="Describe the task for Gemini CLI or drop files and images..."
+              rows={2}
+            />
+          </div>
           <div className="composer-footer">
             <div className="composer-left-controls">
-              <button className="composer-plus-button" title="Attach file" aria-label="Attach file">
+              <button className="composer-plus-button" title="Attach file" aria-label="Attach file" onClick={() => fileInputRef.current?.click()}>
                 <ActionIcon name="plus" />
               </button>
               <CustomDropdown
@@ -1197,7 +578,7 @@ export function ChatView() {
                 <button
                   className="send-button composer-send-button"
                   onClick={handleSend}
-                  disabled={!prompt.trim() || isBlockedByOtherChat}
+                  disabled={(!prompt.trim() && pendingAttachments.length === 0) || isBlockedByOtherChat}
                   title={isBlockedByOtherChat ? "An agent is already running in another chat." : "Send"}
                 >
                   Send
