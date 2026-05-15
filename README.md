@@ -1,7 +1,7 @@
 # GeminiUI
 
 GeminiUI is a  Windows desktop client for the [Gemini CLI](https://github.com/google/gemini-cli). It provides a rich, Codex-like UX for interacting with Google's Gemini models locally on your machine.
-<a href="https://ibb.co/4ngpShhL"><img src="https://i.ibb.co/G43RMzzD/image.png" alt="image" border="0"></a><br />
+<img src="https://i.ibb.co/G43RMzzD/image.png" alt="image" border="0" style="width:100%;"><br />
 
 ## Features
 
