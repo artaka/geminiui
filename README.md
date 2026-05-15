@@ -1,6 +1,7 @@
 # GeminiUI
 
-GeminiUI is a production-grade Windows desktop client for the [Gemini CLI](https://github.com/google/gemini-cli). It provides a rich, Codex-like UX for interacting with Google's Gemini models locally on your machine.
+GeminiUI is a  Windows desktop client for the [Gemini CLI](https://github.com/google/gemini-cli). It provides a rich, Codex-like UX for interacting with Google's Gemini models locally on your machine.
+<a href="https://ibb.co/4ngpShhL"><img src="https://i.ibb.co/G43RMzzD/image.png" alt="image" border="0"></a><br />
 
 ## Features
 
@@ -13,7 +14,7 @@ GeminiUI is a production-grade Windows desktop client for the [Gemini CLI](https
 - **Sandbox Support**: Optional Docker-based sandbox for safe command execution.
 - **Diff Previews & Reverts**: Review and undo changes made by the AI agent.
 - **Command & File Suggestions**: Quick access to CLI commands and workspace files.
-
+- **AI-Generated**: Developed using a complete AI-driven pipeline.
 ## Prerequisites
 
 - **Windows**: Designed for Windows 10/11.
@@ -27,12 +28,19 @@ GeminiUI is a production-grade Windows desktop client for the [Gemini CLI](https
 
 ### Installation
 
-1.  Clone the repository:
+1.  Download Gemini UI installer:
+    [click here](https://github.com/artaka/geminiui/releases)
+2.  Install application:
+3.  Application ready to use!
+
+### Or get the source code
+
+1. Clone git repo:
     ```bash
-    git clone https://github.com/artaka/geminiapp.git
-    cd geminiapp
+    git clone https://github.com/artaka/geminiui.git
+    cd geminiui
     ```
-2.  Install dependencies:
+2. Install dependency:
     ```bash
     npm install
     ```
@@ -43,14 +51,6 @@ Run the app in development mode:
 ```bash
 npm run dev
 ```
-
-### Building for Production
-
-To create a production-ready installer:
-```bash
-npm run dist
-```
-The installer will be generated in the `release/` directory.
 
 ## Architecture
 

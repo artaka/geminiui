@@ -8,3 +8,4 @@ release/
 .env.local
 .idea/
 .vscode/
+.geminiapp-attachments/
