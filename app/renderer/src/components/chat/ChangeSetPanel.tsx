@@ -57,7 +57,7 @@ export const ChangeSetPanel = memo(function ChangeSetPanel(props: {
                 </span>
               </button>
 
-              {isExpanded ? (
+              <div className={`change-file-details-wrap ${isExpanded ? "expanded" : ""}`} aria-hidden={!isExpanded}>
                 <div className="change-file-details">
                   <div className="change-file-toolbar">
                     <button className="icon-link-button" onClick={() => props.onOpenPath(file.path)} title="Open file" aria-label="Open file">
@@ -75,7 +75,7 @@ export const ChangeSetPanel = memo(function ChangeSetPanel(props: {
                   </div>
                   <DiffPreview file={file} />
                 </div>
-              ) : null}
+              </div>
             </div>
           );
         })}

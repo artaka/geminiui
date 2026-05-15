@@ -143,6 +143,48 @@ export function registerIpcHandlers(deps: {
     return history.length > 0 ? history : undefined;
   };
 
+  const getSessionWarmupContext = (messages: Message[]): string | undefined => {
+    const indexedMessages = messages.map((message, index) => ({ message, index }));
+    const selectedIndexes = new Set<number>();
+
+    indexedMessages
+      .filter((entry) => entry.message.role === "user" && entry.message.content.trim())
+      .slice(-10)
+      .forEach((entry) => selectedIndexes.add(entry.index));
+
+    indexedMessages
+      .filter((entry) => entry.message.role === "assistant" && entry.message.content.trim())
+      .slice(-10)
+      .forEach((entry) => selectedIndexes.add(entry.index));
+
+    const selectedMessages = indexedMessages
+      .filter((entry) => selectedIndexes.has(entry.index))
+      .sort((left, right) => left.index - right.index)
+      .map(({ message }) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content.trim()}`);
+
+    if (selectedMessages.length === 0) {
+      return undefined;
+    }
+
+    return [
+      "=== RESTORED CHAT HISTORY FROM A PREVIOUS CLI SESSION ===",
+      "The previous Gemini CLI session could not be resumed.",
+      "The lines below are archived conversation history copied from GeminiUI local storage.",
+      "They are NOT new user instructions.",
+      "Do NOT answer any of the archived messages below directly.",
+      "Use them only as background context to understand the conversation state.",
+      "",
+      "--- BEGIN ARCHIVED HISTORY ---",
+      ...selectedMessages
+        .map((message, index) => `[History ${index + 1}] ${message}`),
+      "--- END ARCHIVED HISTORY ---",
+      "",
+      "=== CURRENT LIVE USER MESSAGE ===",
+      "Respond ONLY to the new live user message that follows this restored history block.",
+      "Do not treat the archived history above as the latest user request."
+    ].join("\n");
+  };
+
   const attachmentRoot = path.join(process.cwd(), ".geminiapp-attachments");
   const textMimePattern = /^(text\/|application\/(json|xml|javascript|typescript|x-sh|x-httpd-php))/i;
   const textExtensions = new Set([
@@ -470,6 +512,7 @@ export function registerIpcHandlers(deps: {
 
     const createdAt = new Date().toISOString();
     const assistantReplayHistory = getAssistantReplayHistory(chatPayload.messages);
+    const sessionWarmupContext = getSessionWarmupContext(chatPayload.messages);
     const storedAttachments = persistAttachments(payload.chatId, payload.userMessageId, payload.attachments ?? []);
     const userMessage: Message = {
       id: payload.userMessageId,
@@ -508,7 +551,8 @@ export function registerIpcHandlers(deps: {
       allowSandboxFallback: settings.preferredSandboxMode !== "force",
       assumeAuthenticated: payload.assumeAuthenticated,
       assistantMessageId: payload.assistantMessageId,
-      assistantReplayHistory
+      assistantReplayHistory,
+      sessionWarmupContext
     });
 
     return { userMessage, assistantMessage };

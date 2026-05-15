@@ -92,7 +92,8 @@ function createDefaultSettings(): AppSettings {
     preferredApprovalMode: "default",
     preferredSandbox: false,
     preferredSandboxMode: "off",
-    debugForceUpdateBanner: false
+    debugForceUpdateBanner: false,
+    alwaysShowRipgrepMissingBanner: true
   };
 }
 
@@ -144,7 +145,7 @@ export class JsonStore {
         const raw = fs.readFileSync(this.metadataPath, "utf8");
         const parsed = JSON.parse(raw) as Partial<MetadataData>;
         const settings = normalizeSettings(parsed.settings);
-        return {
+        const metadata: MetadataData = {
           settings,
           workspaces: parsed.workspaces ?? [],
           chats: (parsed.chats ?? []).map((chat) => ({
@@ -153,6 +154,10 @@ export class JsonStore {
             usage: { ...createDefaultUsageSnapshot(), ...chat.usage }
           }))
         };
+        if (JSON.stringify(parsed.settings ?? {}) !== JSON.stringify(settings)) {
+          this.persistMetadata(metadata);
+        }
+        return metadata;
       } catch (e) {
         console.error("Failed to load metadata, starting fresh", e);
       }
@@ -306,6 +311,27 @@ export class JsonStore {
       .toString("utf8")
       .replace(/^\uFEFF/, "")
       .replace(/\r\n/g, "\n");
+  }
+
+  private sanitizeAssistantContent(chatId: string, messageId: string, content: string): string {
+    if (!content) {
+      return content;
+    }
+
+    const data = this.ensureChatInMemory(chatId);
+    const previousAssistantMessages = data.messages
+      .filter((message) => message.role === "assistant" && message.id !== messageId && message.content)
+      .map((message) => message.content)
+      .sort((left, right) => right.length - left.length);
+
+    let sanitized = content;
+    while (true) {
+      const duplicatedPrefix = previousAssistantMessages.find((message) => sanitized.length > message.length && sanitized.startsWith(message));
+      if (!duplicatedPrefix) {
+        return sanitized;
+      }
+      sanitized = sanitized.slice(duplicatedPrefix.length).replace(/^\s+/, "");
+    }
   }
 
   private computeDiffPreview(beforeText: string, afterText: string): { additions: number; deletions: number; preview: string } {
@@ -828,55 +854,48 @@ export class JsonStore {
   }
 
   appendAssistantToken(chatId: string, token: string, messageId?: string): Message | null {
-    const data = this.ensureChatInMemory(chatId);
-    if (messageId) {
-      const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
-      if (index >= 0) {
-        const message = data.messages[index];
-        const next = { ...message, content: message.content + token, status: "streaming" as const };
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
+    if (!messageId) {
+      return null;
     }
 
-    for (let index = data.messages.length - 1; index >= 0; index -= 1) {
+    const data = this.ensureChatInMemory(chatId);
+    const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
+    if (index >= 0) {
       const message = data.messages[index];
-      if (message.role === "assistant" && message.status === "streaming") {
-        const next = { ...message, content: message.content + token };
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
+      const next = {
+        ...message,
+        content: this.sanitizeAssistantContent(chatId, message.id, message.content + token),
+        status: "streaming" as const
+      };
+      data.messages[index] = next;
+      this.scheduleChatSave(chatId);
+      return next;
     }
     return null;
   }
 
   finalizeAssistant(chatId: string, messageId?: string, durationMs?: number): Message | null {
+    if (!messageId) {
+      return null;
+    }
+
     const data = this.ensureChatInMemory(chatId);
     const update = (message: Message): Message => {
       const status = message.status === "error" ? "error" : ("done" as const);
-      return { ...message, status, durationMs };
+      return {
+        ...message,
+        content: this.sanitizeAssistantContent(chatId, message.id, message.content),
+        status,
+        durationMs
+      };
     };
 
-    if (messageId) {
-      const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
-      if (index >= 0) {
-        const next = update(data.messages[index]);
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
-    }
-
-    for (let index = data.messages.length - 1; index >= 0; index -= 1) {
-      const message = data.messages[index];
-      if (message.role === "assistant" && (message.status === "streaming" || message.status === "error")) {
-        const next = update(message);
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
+    const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
+    if (index >= 0) {
+      const next = update(data.messages[index]);
+      data.messages[index] = next;
+      this.scheduleChatSave(chatId);
+      return next;
     }
     return null;
   }
@@ -959,25 +978,22 @@ export class JsonStore {
   }
 
   failAssistant(chatId: string, errorText: string, messageId?: string, durationMs?: number): Message | null {
-    const data = this.ensureChatInMemory(chatId);
-    if (messageId) {
-      const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
-      if (index >= 0) {
-        const next = { ...data.messages[index], status: "error" as const, content: data.messages[index].content || errorText, durationMs };
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
+    if (!messageId) {
+      return null;
     }
 
-    for (let index = data.messages.length - 1; index >= 0; index -= 1) {
-      const message = data.messages[index];
-      if (message.role === "assistant" && message.status === "streaming") {
-        const next = { ...message, status: "error" as const, content: message.content || errorText, durationMs };
-        data.messages[index] = next;
-        this.scheduleChatSave(chatId);
-        return next;
-      }
+    const data = this.ensureChatInMemory(chatId);
+    const index = data.messages.findIndex((item) => item.id === messageId && item.role === "assistant");
+    if (index >= 0) {
+      const next = {
+        ...data.messages[index],
+        status: "error" as const,
+        content: this.sanitizeAssistantContent(chatId, data.messages[index].id, data.messages[index].content || errorText),
+        durationMs
+      };
+      data.messages[index] = next;
+      this.scheduleChatSave(chatId);
+      return next;
     }
     return null;
   }

@@ -89,13 +89,13 @@ export const AssistantResponse = memo(function AssistantResponse(props: {
         </section>
       ) : null}
 
-      <div className={`assistant-response-block ${props.isLatest ? "latest" : ""} ${props.message.status}`}>
+      <div className={`assistant-response-block ${props.isLatest ? "latest" : ""} ${props.message.status} ${props.changeSet ? "has-change-set" : ""}`.trim()}>
         {props.message.content ? (
           <RichTextMessage text={props.message.content} />
-        ) : props.isLatest ? (
+        ) : props.isLatest && props.message.status === "streaming" ? (
           <div className="assistant-placeholder">
             <span className="assistant-placeholder-dot" />
-            <span>{props.message.status === "error" ? "The run ended with an error." : "Waiting for the assistant response..."}</span>
+            <span>Waiting for the assistant response...</span>
           </div>
         ) : null}
         {props.changeSet && props.onOpenPath && props.onRequestRevert ? (

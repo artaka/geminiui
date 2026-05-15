@@ -44,6 +44,7 @@ export class GeminiCliManager {
   private cliPath = getRuntimeConfig().cli.defaultExecutable;
   private listeners = new Set<(event: CliEvent) => void>();
   private activeProcess: AcpProcessState | null = null;
+  private pendingStopChatId: string | null = null;
 
   constructor(getMainWindow: () => BrowserWindow | null) {
     this.getMainWindow = getMainWindow;
@@ -330,6 +331,37 @@ export class GeminiCliManager {
       window.webContents.send("cli:event", event);
     }
   }
+
+  private emitCancelledResponse(chatId: string, assistantMessageId?: string, durationMs?: number): void {
+    const createdAt = new Date().toISOString();
+    this.emitActivity(chatId, "status", "Generation stopped", "Request cancelled by user.", "done");
+    this.emit({
+      type: "status",
+      chatId,
+      createdAt,
+      status: "stopped",
+      detail: "Request cancelled by user."
+    });
+
+    if (assistantMessageId) {
+      this.emit({
+        type: "assistant_token",
+        chatId,
+        createdAt,
+        token: "Request cancelled by user.",
+        messageId: assistantMessageId
+      });
+    }
+
+    this.emit({
+      type: "completed",
+      chatId,
+      createdAt,
+      messageId: assistantMessageId,
+      durationMs
+    });
+  }
+
 private emitActivityWithId(
   chatId: string,
   activityId: string,
@@ -337,9 +369,25 @@ private emitActivityWithId(
   title: string,
   body: string,
   status: CliActivity["status"],
-  extra?: Partial<Pick<CliActivity, "tone" | "target" | "reason" | "details" | "toolKind" | "suggestedChatTitle">>
+  extra?: Partial<Pick<CliActivity, "tone" | "target" | "reason" | "details" | "toolKind" | "suggestedChatTitle">>,
+  options?: { bindToFirstMessage?: boolean }
 ): void {
-  const messageId = this.activeProcess?.chatId === chatId ? this.activeProcess.currentAssistantMessageId : undefined;
+  const state = this.activeProcess?.chatId === chatId ? this.activeProcess : undefined;
+  const currentMessageId = state?.currentAssistantMessageId;
+  let messageId = currentMessageId;
+
+  if (state && options?.bindToFirstMessage) {
+    const boundMessageId = state.toolCallMessageBindings.get(activityId);
+    if (boundMessageId) {
+      messageId = boundMessageId;
+    } else if (currentMessageId) {
+      state.toolCallMessageBindings.set(activityId, currentMessageId);
+      messageId = currentMessageId;
+    } else {
+      messageId = undefined;
+    }
+  }
+
   const scopedActivityId = messageId && !activityId.includes(messageId) ? `${activityId}_${messageId}` : activityId;
   const activity: CliActivity = {
     id: scopedActivityId,
@@ -711,6 +759,8 @@ private emitActivityWithId(
       currentAssistantMessageId: undefined,
       currentAssistantText: "",
       assistantReplayActive: false,
+      toolCallMessageBindings: new Map<string, string>(),
+      resumedExistingSession: false,
       reasoningSequence: 0
     };
 
@@ -903,6 +953,15 @@ private emitActivityWithId(
 
     const createdAt = new Date().toISOString();
     const updateType = update.sessionUpdate;
+    const isPromptScopedUpdate =
+      updateType === "agent_message_chunk" ||
+      updateType === "tool_call" ||
+      updateType === "tool_call_update" ||
+      updateType === "agent_thought_chunk";
+
+    if (isPromptScopedUpdate && (state.stopRequested || !state.promptInFlight || !state.currentAssistantMessageId)) {
+      return;
+    }
 
     if (updateType === "agent_message_chunk") {
       const token = getAssistantChunkDelta(state, extractTextFromAcpContent(update.content));
@@ -936,7 +995,8 @@ private emitActivityWithId(
           details: normalized.details,
           toolKind: normalized.toolKind,
           suggestedChatTitle: normalized.suggestedChatTitle
-        }
+        },
+        { bindToFirstMessage: true }
       );
       return;
     }
@@ -1038,6 +1098,7 @@ private emitActivityWithId(
           mcpServers: [],
           sessionId
         });
+        state.resumedExistingSession = true;
         this.applySessionState(state, sessionId, result);
         return;
       } catch (error) {
@@ -1055,6 +1116,7 @@ private emitActivityWithId(
       cwd: state.workspacePath,
       mcpServers: []
     });
+    state.resumedExistingSession = false;
     const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
     const nextSessionId = typeof record.sessionId === "string" ? record.sessionId : createId("acp_session");
     this.applySessionState(state, nextSessionId, result);
@@ -1169,8 +1231,16 @@ private emitActivityWithId(
       assumeAuthenticated?: boolean;
       assistantMessageId?: string;
       assistantReplayHistory?: string[];
+      sessionWarmupContext?: string;
     }
   ): Promise<void> {
+    if (this.pendingStopChatId === chatId) {
+      this.pendingStopChatId = null;
+      this.status = "stopped";
+      this.emitCancelledResponse(chatId, options?.assistantMessageId);
+      return;
+    }
+
     const health = options?.assumeAuthenticated
       ? {
           installed: true,
@@ -1234,6 +1304,16 @@ private emitActivityWithId(
 
     const { state, startedFresh } = ensured;
 
+    if (this.pendingStopChatId === chatId) {
+      this.pendingStopChatId = null;
+      state.cancelRequested = true;
+      this.terminateProcess(state, {
+        emitUserVisibleStop: true,
+        detail: "Request cancelled by user."
+      });
+      return;
+    }
+
     this.status = startedFresh ? "starting" : "busy";
     this.emit({
       type: "status",
@@ -1263,9 +1343,19 @@ private emitActivityWithId(
             }
           ]
         : promptAttachments;
+      const finalPromptBlocks =
+        !state.resumedExistingSession && options?.sessionWarmupContext
+          ? [
+              {
+                type: "text",
+                text: options.sessionWarmupContext
+              },
+              ...promptBlocks
+            ]
+          : promptBlocks;
       const result = await this.sendRpcRequest(state, ACP_METHODS.sessionPrompt, {
         sessionId: state.acpSessionId,
-        prompt: promptBlocks
+        prompt: finalPromptBlocks
       });
       const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : {};
       const stopReason = typeof resultRecord.stopReason === "string" ? resultRecord.stopReason : undefined;
@@ -1354,18 +1444,23 @@ private emitActivityWithId(
 
   stop(chatId?: string): void {
     const state = this.activeProcess;
-    if (!state || !state.acpSessionId) {
+    if (!state) {
+      if (chatId) {
+        this.pendingStopChatId = chatId;
+      }
       return;
     }
 
     if (chatId && state.chatId !== chatId) {
+      this.pendingStopChatId = chatId;
       return;
     }
 
     state.cancelRequested = true;
+    this.pendingStopChatId = state.chatId;
     this.terminateProcess(state, {
       emitUserVisibleStop: true,
-      detail: "Generation stopped by user."
+      detail: "Request cancelled by user."
     });
   }
 
@@ -1380,22 +1475,8 @@ private emitActivityWithId(
 
     if (options.emitUserVisibleStop) {
       this.status = "stopped";
-      this.emitActivity(state.chatId, "status", "Generation stopped", options.detail ?? "The active Gemini CLI process was terminated.", "done");
-      this.emit({
-        type: "status",
-        chatId: state.chatId,
-        createdAt: new Date().toISOString(),
-        status: "stopped",
-        detail: options.detail ?? "Generation stopped"
-      });
       const durationMs = state.startTime ? Date.now() - state.startTime : undefined;
-      this.emit({
-        type: "completed",
-        chatId: state.chatId,
-        createdAt: new Date().toISOString(),
-        messageId: state.currentAssistantMessageId,
-        durationMs
-      });
+      this.emitCancelledResponse(state.chatId, state.currentAssistantMessageId, durationMs);
     }
 
     try {
@@ -1406,6 +1487,9 @@ private emitActivityWithId(
 
     if (this.activeProcess === state) {
       this.activeProcess = null;
+    }
+    if (this.pendingStopChatId === state.chatId) {
+      this.pendingStopChatId = null;
     }
   }
 

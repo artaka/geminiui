@@ -845,14 +845,28 @@ select {
 .message-list > *,
 .composer-wrap,
 .empty-state-card,
+.empty-inline-stack,
 .empty-inline-state {
   animation: rise-fade var(--duration-medium) var(--ease-smooth) both;
+}
+
+.empty-inline-stack {
+  width: min(var(--content-max-width), 100%);
+  display: grid;
+  gap: 22px;
+  align-self: center;
+  justify-items: center;
+  margin-top: calc(var(--composer-overlay-reserve) * -0.3);
+}
+
+.empty-inline-stack .warning-banner {
+  width: min(100%, 1120px);
 }
 
 .empty-inline-state {
   width: min(var(--content-max-width), 100%);
   align-self: center;
-  margin-top: calc(var(--composer-overlay-reserve) * -0.5);
+  margin-top: 0;
 }
 
 .sidebar .nav-button,
@@ -1023,6 +1037,10 @@ select {
   margin-top: 8px;
 }
 
+.assistant-response-block.has-change-set .assistant-response-toolbar {
+  margin-top: 4px;
+}
+
 .assistant-response-actions {
   justify-content: flex-end;
 }
@@ -1142,14 +1160,43 @@ select {
   justify-self: end;
 }
 
+.change-file-details-wrap {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    grid-template-rows var(--duration-medium) var(--ease-smooth),
+    opacity var(--duration-fast) ease,
+    transform var(--duration-medium) var(--ease-smooth);
+}
+
+.change-file-details-wrap.expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .change-file-details {
   grid-column: 1 / -1;
-  padding: 0 18px 16px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 18px 0;
+}
+
+.change-file-details-wrap.expanded .change-file-details {
+  padding-bottom: 16px;
 }
 
 .change-file-toolbar {
+  display: none;
   justify-content: flex-end;
   margin-bottom: 8px;
+}
+
+.change-file-details-wrap.expanded .change-file-toolbar {
+  display: flex;
 }
 
 .change-file-diff {
@@ -1168,6 +1215,8 @@ select {
 
 .change-file-diff .diff-code {
   display: block;
+  width: max-content;
+  min-width: 100%;
   background: transparent;
   padding: 0;
   color: inherit;
@@ -2432,23 +2481,28 @@ select {
   top: 0;
   left: 0;
   pointer-events: none;
-  color: transparent;
+  color: var(--text-primary);
   z-index: 1;
 }
 
 .mention-highlight {
   color: #8ab4f8;
-  background: rgba(138, 180, 248, 0.1);
   border-radius: 4px;
-  padding: 0 1px;
+  padding: 0;
   pointer-events: auto;
   cursor: help;
+}
+
+.command-highlight {
+  color: #8ab4f8;
 }
 
 .composer textarea {
   position: relative;
   z-index: 2;
-  color: var(--text-primary);
+  color: transparent;
+  caret-color: var(--text-primary);
+  -webkit-text-fill-color: transparent;
   resize: none;
   outline: none;
   min-height: 46px;
@@ -2456,8 +2510,13 @@ select {
   transition: opacity var(--duration-fast) ease;
 }
 
+.composer textarea::selection {
+  background: rgba(138, 180, 248, 0.22);
+}
+
 .composer textarea::placeholder {
   color: var(--text-muted);
+  -webkit-text-fill-color: var(--text-muted);
 }
 
 .composer-footer,
@@ -2672,6 +2731,17 @@ select {
   min-height: 36px;
   padding-inline: 14px;
   border-radius: 12px;
+}
+
+.composer-send-button:disabled {
+  opacity: 0.88;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.composer-send-button:disabled:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .composer-stop-button {

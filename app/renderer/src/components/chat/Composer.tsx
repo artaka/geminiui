@@ -165,18 +165,27 @@ export function Composer({ activeChat, workspacePath, usageMetrics }: ComposerPr
 
   const renderHighlightedPrompt = () => {
     if (!prompt) return null;
-    
-    const keys = Object.keys(mentionMap);
-    if (keys.length === 0) return prompt;
-    
-    const escapedKeys = keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+
+    const mentionKeys = Object.keys(mentionMap);
+    const commandKeys = CHAT_COMMANDS.map((command) => command.command);
+    const highlightKeys = [...mentionKeys, ...commandKeys].sort((left, right) => right.length - left.length);
+    if (highlightKeys.length === 0) return prompt;
+
+    const escapedKeys = highlightKeys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
     const regex = new RegExp(`(${escapedKeys})`, "g");
-    
+
     const parts = prompt.split(regex);
     return parts.map((part, i) => {
       if (mentionMap[part]) {
         return (
           <span key={i} className="mention-highlight" title={mentionMap[part]}>
+            {part}
+          </span>
+        );
+      }
+      if (commandKeys.includes(part)) {
+        return (
+          <span key={i} className="command-highlight">
             {part}
           </span>
         );
@@ -411,7 +420,13 @@ export function Composer({ activeChat, workspacePath, usageMetrics }: ComposerPr
                 className="send-button composer-send-button"
                 onClick={handleSend}
                 disabled={(!prompt.trim() && pendingAttachments.length === 0) || isBlockedByOtherChat}
-                title={isBlockedByOtherChat ? "An agent is already running in another chat." : "Send"}
+                title={
+                  isBlockedByOtherChat
+                    ? "An agent is already running in another chat."
+                    : (!prompt.trim() && pendingAttachments.length === 0)
+                      ? undefined
+                      : "Send"
+                }
               >
                 Send
               </button>

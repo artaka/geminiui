@@ -1,6 +1,6 @@
 {
   "name": "geminiui",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "description": "Electron desktop client for Gemini CLI with a Codex-like UX.",
   "main": "dist/main/index.js",
   "author": "artaka",

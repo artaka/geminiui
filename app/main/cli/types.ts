@@ -46,6 +46,8 @@ export type AcpProcessState = {
     pendingText: string;
   };
   assistantReplayActive: boolean;
+  toolCallMessageBindings: Map<string, string>;
+  resumedExistingSession: boolean;
   lastReasoningActivityId?: string;
   lastReasoningChunk?: string;
   reasoningSequence: number;

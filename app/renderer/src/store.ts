@@ -569,19 +569,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (event.type === "assistant_token") {
-        let fallbackAssistantId = event.messageId;
-        if (!fallbackAssistantId) {
-          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
-            const m = activeChat.messages[i];
-            if (m.role === "assistant" && m.status === "streaming") {
-              fallbackAssistantId = m.id;
-              break;
-            }
-          }
+        if (!event.messageId) {
+          return state;
         }
 
         const messages = activeChat.messages.map((message) =>
-          message.role === "assistant" && message.id === fallbackAssistantId
+          message.role === "assistant" && message.id === event.messageId
             ? {
                 ...message,
                 status: "streaming" as const,
@@ -667,25 +660,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (event.type === "completed") {
-        let fallbackAssistantId = event.messageId;
-        if (!fallbackAssistantId) {
-          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
-            const m = activeChat.messages[i];
-            if (m.role === "assistant" && m.status === "streaming") {
-              fallbackAssistantId = m.id;
-              break;
-            }
-          }
+        if (!event.messageId) {
+          return {
+            cliStatus: "connected",
+            activeRunChatId: state.activeRunChatId === event.chatId ? null : state.activeRunChatId,
+            cliHealth: state.cliHealth ? { ...state.cliHealth, status: "connected" } : state.cliHealth
+          };
         }
 
         const messages = activeChat.messages.map((message) => {
-          if (message.role === "assistant" && message.id === fallbackAssistantId) {
+          if (message.role === "assistant" && message.id === event.messageId) {
             return { ...message, status: "done" as const, durationMs: event.durationMs };
           }
           return message;
         });
         const activities = activeChat.activities.map((activity) => {
-          if (activity.tone === "reasoning" && activity.status === "running" && (!fallbackAssistantId || activity.messageId === fallbackAssistantId)) {
+          if (activity.tone === "reasoning" && activity.status === "running" && activity.messageId === event.messageId) {
             return { ...activity, status: "done" as const };
           }
           return activity;
@@ -700,19 +690,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (event.type === "error") {
         const authFailure = /sign in|login|authenticate|credential|oauth|unauthorized/i.test(event.message);
-        let fallbackAssistantId = event.messageId;
-        if (!fallbackAssistantId) {
-          for (let i = activeChat.messages.length - 1; i >= 0; i--) {
-            const m = activeChat.messages[i];
-            if (m.role === "assistant" && m.status === "streaming") {
-              fallbackAssistantId = m.id;
-              break;
-            }
-          }
+        if (!event.messageId) {
+          return {
+            cliStatus: "error",
+            activeRunChatId: state.activeRunChatId === event.chatId ? null : state.activeRunChatId,
+            cliHealth: state.cliHealth
+              ? {
+                  ...state.cliHealth,
+                  status: "error",
+                  authenticated: authFailure ? false : state.cliHealth.authenticated,
+                  message: event.message
+                }
+              : state.cliHealth,
+            settings: authFailure && state.settings ? { ...state.settings, manualAuthConfirmed: false } : state.settings
+          };
         }
 
         const messages = activeChat.messages.map((message) => {
-          if (message.role === "assistant" && message.id === fallbackAssistantId) {
+          if (message.role === "assistant" && message.id === event.messageId) {
             return { ...message, status: "error" as const, content: message.content || event.message };
           }
           return message;

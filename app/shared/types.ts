@@ -173,6 +173,7 @@ export interface AppSettings {
   preferredSandbox: boolean;
   preferredSandboxMode: SandboxMode;
   debugForceUpdateBanner?: boolean;
+  alwaysShowRipgrepMissingBanner?: boolean;
   manualAuthConfirmed?: boolean;
   missingCliOnboardingShown?: boolean;
   activeWorkspaceId?: string;

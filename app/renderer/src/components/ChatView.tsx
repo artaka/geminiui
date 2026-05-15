@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CliActivity, FileChangeSet } from "@shared/types";
 import { useAppStore } from "../store";
 import { ActionIcon } from "./chat/Glyphs";
@@ -11,6 +12,7 @@ export function ChatView() {
   const cliStatus = useAppStore((state) => state.cliStatus);
   const activeRunChatId = useAppStore((state) => state.activeRunChatId);
   const environment = useAppStore((state) => state.environment);
+  const settings = useAppStore((state) => state.settings);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const revertChangeSet = useAppStore((state) => state.revertChangeSet);
   const openPath = useAppStore((state) => state.openPath);
@@ -22,6 +24,7 @@ export function ChatView() {
   const [revertTarget, setRevertTarget] = useState<{ changeSetId: string; relativePath?: string } | null>(null);
   const [revertError, setRevertError] = useState<string | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
 
   const isGlobalBusy = cliStatus === "starting" || cliStatus === "streaming" || cliStatus === "busy";
   const isBusy = isGlobalBusy && (!activeRunChatId || activeRunChatId === activeChat?.session.id);
@@ -68,6 +71,9 @@ export function ChatView() {
 
   const lastMessageId = chatMessages[chatMessages.length - 1]?.id;
   const lastMessageContent = chatMessages[chatMessages.length - 1]?.content;
+  const lastActivityId = chatActivities[chatActivities.length - 1]?.id;
+  const lastActivityBody = chatActivities[chatActivities.length - 1]?.body;
+  const lastActivityStatus = chatActivities[chatActivities.length - 1]?.status;
 
   const updateScrollState = useCallback(() => {
     const container = messageListRef.current;
@@ -87,6 +93,17 @@ export function ChatView() {
     setIsScrolledToBottom(true);
   }, []);
 
+  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    if (scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+    }
+
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      scrollToBottom(behavior);
+    });
+  }, [scrollToBottom]);
+
   useEffect(() => {
     const container = messageListRef.current;
     if (!container) {
@@ -98,15 +115,30 @@ export function ChatView() {
   }, [updateScrollState, activeChat?.session.id]);
 
   useEffect(() => {
-    scrollToBottom("auto");
-  }, [activeChat?.session.id, scrollToBottom]);
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    scheduleScrollToBottom("auto");
+  }, [activeChat?.session.id, scheduleScrollToBottom]);
 
   useEffect(() => {
     if (!isScrolledToBottom) {
       return;
     }
-    scrollToBottom("auto");
-  }, [lastMessageId, lastMessageContent, isScrolledToBottom, scrollToBottom]);
+    scheduleScrollToBottom(isBusy ? "auto" : "smooth");
+  }, [lastMessageId, lastMessageContent, isBusy, isScrolledToBottom, scheduleScrollToBottom]);
+
+  useEffect(() => {
+    if (!isScrolledToBottom) {
+      return;
+    }
+    scheduleScrollToBottom(isBusy ? "auto" : "smooth");
+  }, [chatActivities.length, lastActivityId, lastActivityBody, lastActivityStatus, isBusy, isScrolledToBottom, scheduleScrollToBottom]);
 
   if (!activeWorkspace) {
     return (
@@ -150,20 +182,29 @@ export function ChatView() {
     contextLimit,
     contextRatio
   };
+  const showRipgrepMissingBanner =
+    settings?.alwaysShowRipgrepMissingBanner ||
+    environment?.dependencies.some((dependency) => dependency.id === "ripgrep" && !dependency.installed);
+  const modalRoot = typeof document !== "undefined" ? document.body : null;
 
   return (
     <div className="chat-view">
       <div ref={messageListRef} className={`message-list ${chatMessages.length === 0 ? "message-list-empty" : ""}`.trim()}>
-        {environment?.dependencies.some((dependency) => dependency.id === "ripgrep" && !dependency.installed) ? (
-          <div className="warning-banner">Ripgrep is missing. Gemini CLI still works, but workspace search falls back to a slower tool.</div>
-        ) : null}
-
         {chatMessages.length === 0 ? (
-          <div className="empty-inline-state">
-            <div className="eyebrow">Ready</div>
-            <div className="hero-title">What should Gemini help you with in {activeWorkspace.name}?</div>
+          <div className="empty-inline-stack">
+            {showRipgrepMissingBanner ? (
+              <div className="warning-banner">Ripgrep is missing. Gemini CLI still works, but workspace search falls back to a slower tool.</div>
+            ) : null}
+            <div className="empty-inline-state">
+              <div className="eyebrow">Ready</div>
+              <div className="hero-title">What should Gemini help you with in {activeWorkspace.name}?</div>
+            </div>
           </div>
-        ) : null}
+        ) : (
+          showRipgrepMissingBanner ? (
+            <div className="warning-banner">Ripgrep is missing. Gemini CLI still works, but workspace search falls back to a slower tool.</div>
+          ) : null
+        )}
 
         {chatMessages.map((message, index) => {
           if (message.role === "user") {
@@ -199,7 +240,7 @@ export function ChatView() {
 
       <Composer activeChat={activeChat} workspacePath={activeWorkspace.path} usageMetrics={usageMetrics} />
 
-      {revertTarget ? (
+      {modalRoot && revertTarget ? createPortal(
         <div className="modal-backdrop" role="presentation" onClick={() => setRevertTarget(null)}>
           <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="revert-change-title" onClick={(event) => event.stopPropagation()}>
             <h3 id="revert-change-title">Revert agent changes?</h3>
@@ -224,10 +265,11 @@ export function ChatView() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        modalRoot
       ) : null}
 
-      {revertError ? (
+      {modalRoot && revertError ? createPortal(
         <div className="modal-backdrop" role="presentation" onClick={() => setRevertError(null)}>
           <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="revert-error-title" onClick={(event) => event.stopPropagation()}>
             <h3 id="revert-error-title">Rollback failed</h3>
@@ -238,7 +280,8 @@ export function ChatView() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        modalRoot
       ) : null}
     </div>
   );
